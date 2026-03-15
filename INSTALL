@@ -1,6 +1,6 @@
             INSTALLING latexmk
             ==================
-      (Version 4.87, 15 Jun. 2025)
+      (Version 4.88, 9 Mar. 2026)
 
             John Collins
             Physics Department
@@ -23,14 +23,14 @@ the latex program, etc, are then rerun whenever one of the source
 files is modified.  Latexmk automatically determines file dependencies
 from the LaTeX .log and .fls files.
 
-Latexmk can be installed and used on UNIX (including LINUX and OS-X),
+Latexmk can be installed and used on UNIX (including Linux and macOS),
 and MS Windows (tested under WinXP and some later versions).  It can
 presumably be used on other systems with suitable customization.
 
 On all systems, the prequisites are
 
 a.  A working installation of Perl.  (See http://www.cpan.org/ if you don't
-    have one.  Modern UNIX-like systems, particularly linux and OS-X, often
+    have one.  Modern UNIX-like systems, particularly Linux and macOS, often
     have perl installed by default.  As for MSWindows, the TeX Live
     distribution (2009 or later) includes Perl, and in the default
     configuration also includes latexmk.)
@@ -49,7 +49,7 @@ c.  In addition, the installation of TeX and LaTex should, of course,
 1. If you have installed a distribution of TeX and friends, you will
    probably find that latexmk is already installed on your computer.  This
    applies to both the TeX Live and the MiKTeX distributions (Note that
-   MacTeX on OS-X incorporates TeX Live, so anything said about TeX Live also
+   MacTeX on macOS incorporates TeX Live, so anything said about TeX Live also
    applies to MacTeX.)  If you have only installed a subset of packages,
    e.g., because you installed BasicTeX, then the subset may or may not
    include latexmk; in that case you should be able to use your
@@ -77,7 +77,7 @@ c.  In addition, the installation of TeX and LaTex should, of course,
    documentation, for further information.
 
 
-**Manual** installation on UNIX/LINUX/OS-X
+**Manual** installation on UNIX/Linux/macOS
   (Separate instructions for Windows, below)
 ============================================
 
@@ -114,7 +114,7 @@ configuration instructions see item 6.
         can be found in the PATH for executables.  This insulates latexmk
         from the fact that the Perl executable has a system-dependent
         location. The program /usr/bin/env is present on almost all modern
-        UNIX-type systems, including linux and macOS.]
+        UNIX-type systems, including Linux and macOS.]
 
 5.  (Optional) Copy the file latexmk.1 to an appropriate directory for man
     pages, e.g., /usr/local/man/man1/.
@@ -134,7 +134,7 @@ configuration instructions see item 6.
     obvious: it runs the command ps and is used in preview_continuous_mode
     to determine whether a previewer is already running.  The format of the
     output of ps is highly system dependent.  Latexmk should get it right
-    under LINUX and macOS.
+    under Linux and macOS.
 
     To know what the current settings are, run
 
@@ -162,7 +162,7 @@ configuration instructions see item 6.
         directories is appropriate you'll need to modify latexmk.pl.)
 
         Those directories apply to Unix-like operating systems (including
-        linux and macOS).  On MS-Windows, the system start-up file is one
+        Linux and macOS).  On MS-Windows, the system start-up file is one
         of C:\latexmk\LatexMk C:\latexmk\latexmkrc (If you happen to use
         Cygwin, latexmk combines both the MS-Windows and the Unix
         possibilities.)
@@ -332,7 +332,7 @@ Other systems
 =============
 
 For other systems you are on your own.  The instructions for
-UNIX/LINUX and MS-Windows should help you to see what to do.  Let me
+UNIX/Linux and MS-Windows should help you to see what to do.  Let me
 know (username jcc8 at node psu.edu) what happens, so that I
 can update these instructions and possibly latexmk as well.
 
@@ -363,7 +363,7 @@ Tricky points
 
 3.  Non-ASCII characters in file and directory names: In the current
     version of latexmk and current TeX Live and MiKTeX, these are generally
-    handled correctly, particular on linux and macOS systems.
+    handled correctly, particular on Linux and macOS systems.
 
     But it is worth being aware there is a potential for problems: (a) Default
     installations of MS-Windows do not make all Unicode characters in

@@ -1,4 +1,4 @@
-.TH LATEXMK 1 "15 June 2025" ""
+.TH LATEXMK 1 "9 March 2026" ""
 .SH NAME
 latexmk \- generate LaTeX document
 .SH SYNOPSIS
@@ -82,7 +82,7 @@ This also extends the possibility of postprocessing generated files.
 in configuration files, so that it can accommodate a wide variety of
 user needs and system configurations.  Default values are set
 according to the operating system, so \fIlatexmk\fR often works
-without special configuration on MS-Windows, cygwin, Linux, OS-X, and
+without special configuration on MS-Windows, cygwin, Linux, macOS, and
 other UNIX systems.  See the section "Configuration/Initialization
 (rc) Files", and then the later sections "How to Set Variables in
 Initialization Files", "Format of Command Specifications", "List of
@@ -127,11 +127,10 @@ these programs trigger special action or behavior by
 \fIlatexmk\fR, in which case they have specific explanations in this
 document; in this case they may or may not be passed to *latex as well.
 
-Run \fIlatexmk\fR with the \fB-showextraoptions\fR to get a
-list of the options that \fIlatexmk\fR accepts and that are simply
-passed through to \fI*latex\fR.  See also the
-explanation of the \fB-showextraoptions\fR option for more
-information.
+Run \fIlatexmk\fR with the \fB-showextraoptions\fR to get a list of these
+other options that \fIlatexmk\fR accepts but that are simply passed through
+to \fI*latex\fR.  For details, see the explanation of the
+\fB-showextraoptions\fR option.
 
 
 \fBDefinitions of options and arguments\fR
@@ -349,6 +348,10 @@ dependencies and are also deleted.  Otherwise these files are not deleted.
 .B -CA
 (Obsolete).  Now equivalent to the \fB-C\fR option.  See that option
 for details. 
+
+.TP 
+.B -cc
+"Continuous compile" without previewer.  Equivalent to \fB-pvc -view=none\fR.
 
 .TP 
 .B -cd
@@ -1127,21 +1130,26 @@ Turn off \fB-pv\fR.
 
 .TP
 .B -pvc
-Run a file previewer and continually update the .dvi, .ps, and/or .pdf
-files whenever changes are made to source files (see the Description
-above).  Which of these files is generated and which is viewed is
-governed by the other options, and is the same as for the \fB-pv\fR
-option. 
-The preview-continuous option \fB-pvc\fR can only work with one file.
-So in this case you will normally only specify one filename on
-the command line.  It is also incompatible with the 
-\fB-p\fR and \fB-pv\fR options, so it turns these options off.
+"Continuous preview mode", i.e., compile document, run a file previewer,
+and then regularly check for changed source files and recompile as
+needed. (See the Description above).  Which files are generated and
+which is viewed is governed by the other options, and is the same as for
+the \fB-pv\fR option.
 
-The \fB-pvc\fR option also turns off force mode (\fB-f\fR), as is
+The preview-continuous option \fB-pvc\fR can only work with one file.  So
+when you use this option, you should only specify one filename on the
+command line.  It is also incompatible with the \fB-p\fR and \fB-pv\fR
+options, so it turns these options off.
+
+The \fB-pvc\fR option also turns off force mode, as this is
 normally best for continuous preview mode.  If you really want force
 mode, use the options in the order \fB-pvc -f\fR.
 
-With a good previewer the display will be automatically updated.
+If you wish to do a "continuous compile", but don't want a previewer to be
+run, then do \fB-pvc -view=none\fR.
+
+With a good previewer the display will be automatically updated when the
+viewed file changes. 
 (Under \fIsome but not all\fR versions of UNIX/Linux "gv -watch" does
 this for postscript files; this can be set by a configuration
 variable.  This would also work for pdf files except for an apparent
@@ -1251,13 +1259,15 @@ processing.  (This is the default.)
 Show the list of extra \fI*latex\fR options that
 \fIlatexmk\fR recognizes, but that it simply passes
 through to the programs \fI*latex\fR  when they
-are run.  These options are 
+are run.
+
+These options are 
 (currently) a combination of those allowed by the TeXLive and MiKTeX
 implementations.  (If a particular option is given to \fIlatexmk\fR
 but is not handled by the particular implementation of \fI*latex\fR
 that is being used, that program will probably give a warning or an
 error.)  These options are very numerous, but are not listed
-in this documentation because they have no effect on \fIlatexmk\fR's
+in this documentation because they have no direct effect on \fIlatexmk\fR's
 actions.
 
 There are a few options (e.g., \fB-includedirectory=dir\fR,
@@ -1277,6 +1287,19 @@ entries in this documentation.  Among these options are:
 There are also options that are accepted by \fI*latex\fR, but
 instead trigger actions purely by \fIlatexmk\fR: \fB-help\fR,
 \fB-version\fR. 
+
+\fINotes that may help when debugging problems\fR: The method that
+\fIlatexmk\fR to pass any of the accepted extra options to \fI*latex\fR is
+that when it constructs the command line for running \fI*latex\fR, it
+inserts the options where the placeholder %O appears in the strings
+specifying the command line.  (I.e., in the strings given by the
+configuration variables \fI$pdflatex\fR etc.)  Note that \fIlatexmk\fR uses
+this same method to add other options to the command line, and that the
+strings in \fI$pdflatex\fR etc may contain other options.  So depending on
+the situation and the configuration, the use of an extra option on the
+command line \fIlatexmk\fR might not achieve the desired effect; e.g., it
+could be overridden by a later option in the command line.
+
 
 .TP
 .B -silent
@@ -1834,7 +1857,7 @@ Here $HOME
 is the user's home directory.  [\fILatexmk\fR determines the user's
 home directory as follows:  It is the value of the environment variable
 HOME, if this variable exists, which normally is the case on UNIX-like
-systems (including Linux and OS-X).  Otherwise the environment
+systems (including Linux and macOS).  Otherwise the environment
 variable USERPROFILE is used, if it exists, which normally is the case
 on MS-Windows systems. Otherwise a blank string is used instead of
 $HOME, in which case \fIlatexmk\fR does not look for an RC file in
@@ -2141,7 +2164,7 @@ perform some extra processing, you could do something like:
      $pdflatex = 'pdflatex --shell-escape %O %S; pst2pdf_for_latexmk %B';
 
 This definition assumes you are using a UNIX-like system (which
-includes Linux and OS-X), so that the
+includes Linux and macOS), so that the
 two commands to be run are separated by the semicolon in the middle of
 the string.
 
@@ -2748,16 +2771,21 @@ The command to invoke a dvi-previewer in landscape mode.
 use the MS-Windows \fIstart\fR program, which will cause to be run
 whatever command the system has associated with .dvi files.]
 .TP
-.B $dvipdf ["dvipdf -dALLOWPSTRANSPARENCY %O %S %D"]
-Command to convert .dvi to .pdf file.  A common reconfiguration is to
-use the dvipdfm command, which needs its arguments in a different order:
+.B $dvipdf ["dvipdf -dALLOWPSTRANSPARENCY %O %S %D" under UNIX]
+Command to convert .dvi to .pdf file.
+
+Under Windows, the default is
+"dvips -P pdf -o - %S | ps2pdf -sDEVICE=pdfwrite -dALLOWPSTRANSPARENCY %O - %D".
+The reason for this difference is that the implementation of Ghostscript
+provided by Windows distributions of TeX only provides the \fIps2pdf\fR
+program, but not \fIdvipdf\fR, unlike the case with typical UNIX
+Ghostscript packages.
+
+A common reconfiguration is to use the dvipdfm command, which needs its
+arguments in a different order:
 
      $dvipdf = "dvipdfm %O -o %D %S";
 
-WARNING: The default dvipdf script generates pdf files with bitmapped
-fonts, which do not look good when viewed by acroread.  That script
-should be modified to give dvips the options "-P pdf" to ensure that
-type 1 fonts are used in the pdf file.
 .TP
 .B $dvipdf_silent_switch ["-q"]
 Switch(es) for dvipdf program when silent mode is on.
@@ -3019,6 +3047,11 @@ specifies that lines beginning with "%%CreationDate: " are to be
 ignored in deciding whether a file of the given extension \fI.eps\fR
 has changed.
 
+To ignore all changes in files of a given type, use a pattern that matches
+all lines, e.g.,
+
+   $hash_calc_ignore_pattern{'tkz'} = '^';
+
 There is only one regular expression available for each extension.  If
 you need more one pattern to specify lines to ignore, then you need to
 combine the patterns into a single regular expression.  The simplest
@@ -3074,8 +3107,8 @@ Suppose you had .tex files test1.tex and test2.tex.  Then when you run
 
 both files will be compiled.  The .aux, .log, and .pdf files will have
 basenames test1-MSWin32 ante test2-MSWin32 on a MS-Windows system,
-test1-darwin and test2-darwin on an OS-X system, and a variety of
-similar cases on linux systems.
+test1-darwin and test2-darwin on an macOS system, and a variety of
+similar cases on Linux systems.
 
 .TP
 .B $kpsewhich ["kpsewhich %S"]
@@ -3129,38 +3162,6 @@ To do a coordinated setting of all of \fI$dvilualatex\fR, \fI$hilatex\fR,
 \fI$latex\fR, \fI$pdflatex\fR, \fI$lualatex\fR, and \fI$xelatex\fR, see the
 section "Advanced Configuration".
 
-.TP
-.B %latex_input_extensions
-This variable specifies the extensions tried by \fIlatexmk\fR when it finds
-that a LaTeX run resulted in an error that a file has not been found,
-and the file is given without an extension.  This typically happens when
-LaTeX commands of the form \\input{file} or \\includegraphics{figure},
-when the relevant source file does not exist.
-
-In this situation, \fIlatexmk\fR searches for custom dependencies to make
-the missing file(s), but restricts it to the extensions specified by
-the variable %latex_input_extensions.  The default extensions 
-are 'tex' and 'eps'.
-
-(For Perl experts: %latex_input_extensions is a hash whose keys are
-the extensions.  The values are irrelevant.)  Two subroutines are
-provided for manipulating this and the related variable
-%pdflatex_input_extensions, add_input_ext and remove_input_ext.  They
-are used as in the following examples are possible lines in an
-initialization file:
-
-    remove_input_ext( 'latex', 'tex' );
-
-removes the extension 'tex' from latex_input_extensions
-
-    add_input_ext( 'latex', 'asdf' );
-
-add the extension 'asdf to latex_input_extensions.  (Naturally with
-such an extension, you should have made an appropriate custom
-dependency for \fIlatexmk\fR, and should also have done the appropriate
-programming in the LaTeX source file to enable the file to be read.
-The standard extensions are handled by LaTeX and its graphics/graphicx
-packages.)
 .TP
 .B $latex_silent_switch ["-interaction=batchmode"]
 Switch(es) for the LaTeX processing program when silent mode is on.
@@ -3216,21 +3217,6 @@ To do a coordinated setting of all of \fI$dvilualatex\fR, \fI$hilatex\fR,
 section "Advanced Configuration".
 
 .TP
-.B %lualatex_input_extensions
-This variable specifies the extensions tried by \fIlatexmk\fR when it finds
-that a \fIlualatex\fR run resulted in an error that a file has not been found,
-and the file is given without an extension.  This typically happens when
-LaTeX commands of the form \\input{file} or \\includegraphics{figure},
-when the relevant source file does not exist.
-
-In this situation, \fIlatexmk\fR searches for custom dependencies to make
-the missing file(s), but restricts it to the extensions specified by
-the variable %pdflatex_input_extensions.  The default extensions 
-are 'tex', 'pdf', 'jpg, and 'png'.
-
-See details of the \fI%latex_input_extensions\fR for other information
-that equally applies to \fI%lualatex_input_extensions\fR.
-.TP
 .B $lualatex_silent_switch  ["-interaction=batchmode"]
 Switch(es) for the \fIlualatex\fR program (specified in the variable
 \fI$lualatex\fR) when silent mode is on.
@@ -3244,7 +3230,7 @@ The make processing program.
 .B $makeindex ["makeindex %O -o %D %S"]
 The index processing program.
 .TP
-.B $makeindex_fudge [0]
+.B $makeindex_fudge [1]
 When using makeindex, whether to change directory to $aux_dir before running
 makeindex.  Set to 1 if $aux_dir is not an explicit subdirectory of current
 directory, otherwise makeindex will refuse to write its output and log
@@ -3380,21 +3366,6 @@ To do a coordinated setting of all of \fI$dvilualatex\fR, \fI$hilatex\fR,
 section "Advanced Configuration".
 
 .TP
-.B %pdflatex_input_extensions
-This variable specifies the extensions tried by \fIlatexmk\fR when it finds
-that a \fIpdflatex\fR run resulted in an error that a file has not been found,
-and the file is given without an extension.  This typically happens when
-LaTeX commands of the form \\input{file} or \\includegraphics{figure},
-when the relevant source file does not exist.
-
-In this situation, \fIlatexmk\fR searches for custom dependencies to make
-the missing file(s), but restricts it to the extensions specified by
-the variable %pdflatex_input_extensions.  The default extensions 
-are 'tex', 'pdf', 'jpg, and 'png'.
-
-See details of the \fI%latex_input_extensions\fR for other information
-that equally applies to \fI%pdflatex_input_extensions\fR.
-.TP
 .B $pdflatex_silent_switch  ["-interaction=batchmode"]
 Switch(es) for the \fIpdflatex\fR program (specified in the variable
 \fI$pdflatex\fR) when silent mode is on.
@@ -3402,19 +3373,12 @@ Switch(es) for the \fIpdflatex\fR program (specified in the variable
 See details of the \fI$latex_silent_switch\fR for other information
 that equally applies to \fI$pdflatex_silent_switch\fR.
 .TP
-.B $pdf_previewer ["start acroread %O %S"]
+.B $pdf_previewer [Operating-system dependent]
 The command to invoke a pdf-previewer.
 
-On MS-Windows, the default is changed to "cmd /c start """; under more recent versions of
-Windows, this will cause to be run whatever command the system has
-associated with .pdf files.  But this may be undesirable if this
-association is to \fIacroread\fR -- see the notes in the explanation
-of the \fB-pvc\fR option.]  
-
-On OS-X the default is changed to "open %S", which results in OS-X
-starting up (and detaching) the viewer associated with the file.  By
-default, for pdf files this association is to OS-X's preview, which is
-quite satisfactory.
+On most operating systems (MS-Windows, Linux, macOS, cygwin and msys), the
+default is set so that the previewer opened is the the operating system has
+associated with pdf files.  For example, on macOS the default is "open %S". 
 
 \fBWARNING\fR:  Problem under MS-Windows:
 if acroread is used as the pdf previewer, and it is
@@ -3426,18 +3390,18 @@ used to view pdf files.
 
 \fBImportant note\fR: Normally you will want to have a previewer run
 detached, so that \fIlatexmk\fR doesn't wait for the previewer to
-terminate before continuing its work.  So normally you should prefix
-the command by "start ", which flags to \fIlatexmk\fR that it should
-do the detaching of the previewer itself (by whatever method is
-appropriate to the operating system).  But sometimes letting
-\fIlatexmk\fR do the detaching is not appropriate (for a variety of
-non-trivial reasons), so you should put the "start " bit in
-yourself, whenever it is needed.
+terminate before continuing its work.  By default, this is done
+automatically by latexmk (by whatever method is
+appropriate to the operating system).  But sometimes this behavior is not
+what is needed.  In that case, precede the command string by the keyword
+"nostart". 
+
 .TP
 .B $pdf_update_command [""]
 When the pdf previewer is set to be updated by running a command, this
 is the command that is run.  See the information for the variable
 \fI$pdf_update_method\fR. 
+
 .TP
 .B $pdf_update_method [1 under UNIX, 3 under MS-Windows]
 How the pdf viewer updates its display when the pdf file has
@@ -3452,9 +3416,11 @@ Note that acroread under MS-Windows (but not UNIX) locks the pdf file, so
 the default value is then 3.  
 
 Arranging to use a command to get a previewer explicitly updated
-requires three variables to be set.  For example:
+requires three variables to be set.  For example, this method works nicely
+with the xpdf program.  With recent versions (4.05 or later) you can use
+the following settings:
 
-    $pdf_previewer = "start xpdf -remote %R %O %S";
+    $pdf_previewer = "Start xpdf -remote %R 'openFile('%S')' singlePageMode";
     $pdf_update_method = 4;
     $pdf_update_command = "xpdf -remote %R -reload";
 
@@ -3474,7 +3440,7 @@ The variable \fI$pid_position\fR is used to
 specify which word in lines of the output from \fI$pscmd\fR
 corresponds to the process ID.  The first word in the line is numbered
 0.  The default value of 1 (2nd word in line) is correct for Solaris
-2.6, Linux, and OS-X with their default settings of \fI$pscmd\fR.
+2.6, Linux, and macOS with their default settings of \fI$pscmd\fR.
 
 Setting the variable to -1 is used to indicate that
 \fI$pscmd\fR is not to be used.
@@ -3504,11 +3470,15 @@ To set all of \fI$latex\fR, \fI$pdflatex\fR, \fI$lualatex\fR, and
 
 .TP
 .B $preview_continuous_mode [0]
-If nonzero, run a previewer to view the document, and
-continue running \fIlatexmk\fR to keep .dvi up-to-date.  Equivalent to
-the \fB-pvc\fR option.
-Which previewer is run depends on the other settings, see the command
-line options \fB-view=\fR, and the variable \fI$view\fR.  
+If nonzero, use "preview continuous mode": Compile document, run a
+previewer, and then regularly check for changed source files and recompile
+document as needed to keep the viewed file up-to-date.  Equivalent to the
+\fB-pvc\fR option.
+
+Which previewer (if any) is run depends on the other settings, see the command
+line options \fB-view=\fR, and the variable \fI$view\fR.  To do a
+"continuous compile" without running a previewer, set \fI$view='none'\fR
+together with \fI$preview_continuous_mode=1\fR.
 .TP
 .B $preview_mode [0]
 If nonzero, run a previewer to preview the document.
@@ -3540,7 +3510,7 @@ number is determined.
 
 The default for \fIpscmd\fR is "NONE" under MS-Windows and cygwin
 (i.e., the command is not used), "ps -ww -u $ENV{USER}" under 
-OS-X, and 
+macOS, and 
 "ps -f -u $ENV{USER}" under other operating systems (including Linux).
 In these specifications "$ENV{USER}" is substituted by the username.
 .TP
@@ -3622,7 +3592,7 @@ quotes.  If this variable is 1 (or any other value Perl regards as
 true), then quoting is done.  Otherwise quoting is omitted.  
 
 The quoting method used by \fIlatexmk\fR is tested to work correctly under
-UNIX systems (including Linux and Mac OS-X) and under MS-Windows.  It
+UNIX systems (including Linux and macOS) and under MS-Windows.  It
 allows the use of filenames containing special characters, notably
 spaces.  (But note that many versions of \fI*latex\fR cannot
 correctly deal with TeX files whose names contain spaces.  \fILatexmk\fR's
@@ -3669,13 +3639,13 @@ because sometimes graphics files get generated in the output or aux
 directories.] 
 
 The default under MSWin and Cygwin is ';' and under UNIX-like
-operating systems (including Linux and OS-X) is ':'.  Normally the
+operating systems (including Linux and macOS) is ':'.  Normally the
 defaults give correct behavior.  But there can be difficulties if your
 operating system is of one kind, but some of your software is running
 under an emulator for the other kind of operating system; in that case
 you'll need to find out what is needed, and set
 \fI$search_path_separator\fR explicitly.  (The same goes, of course,
-for unusual operating systems that are not in the MSWin, Linux, OS-X,
+for unusual operating systems that are not in the MSWin, Linux, macOS,
 Unix collection.)
 .TP
 .B $show_time [0]
@@ -3748,7 +3718,7 @@ The default under MSWindows (including cygwin), is to set
 \fI$tmpdir\fR to the value of the first of whichever of the system
 environment variables TMPDIR or TEMP exists, otherwise to the current
 directory.  Under other operating systems (expected to be UNIX/Linux,
-including OS-X), the default is the value of the system environment
+including macOS), the default is the value of the system environment
 variable TMPDIR if it exists, otherwise "/tmp".
 
 .TP
@@ -3864,21 +3834,6 @@ To do a coordinated setting of all of \fI$dvilualatex\fR, \fI$hilatex\fR,
 \fI$latex\fR, \fI$pdflatex\fR, \fI$lualatex\fR, and \fI$xelatex\fR, see the
 section "Advanced Configuration".
 
-.TP
-.B %xelatex_input_extensions
-This variable specifies the extensions tried by \fIlatexmk\fR when it finds
-that an \fIxelatex\fR run resulted in an error that a file has not been found,
-and the file is given without an extension.  This typically happens when
-LaTeX commands of the form \\input{file} or \\includegraphics{figure},
-when the relevant source file does not exist.
-
-In this situation, \fIlatexmk\fR searches for custom dependencies to make
-the missing file(s), but restricts it to the extensions specified by
-the variable %xelatex_input_extensions.  The default extensions 
-are 'tex', 'pdf', 'jpg, and 'png'.
-
-See details of the \fI%latex_input_extensions\fR for other information
-that equally applies to \fI%xelatex_input_extensions\fR.
 .TP
 .B $xelatex_silent_switch  ["-interaction=batchmode"]
 Switch(es) for the \fIxelatex\fR program (specified in the variable
@@ -4635,7 +4590,7 @@ software.
 In this section, I give a couple of examples of how \fIlatexmk\fR can
 be usefully invoked from a Makefile.  The examples use specific
 features of current versions of GNU \fImake\fR, which is the default
-on both linux and OS-X systems.  They may need modifications for other
+on both Linux and macOS systems.  They may need modifications for other
 versions of \fImake\fR.  
 
 The simplest method is simply to delegate all the relevant tasks to
@@ -4791,7 +4746,7 @@ e-mail addresses are not written in their standard form to avoid being
 harvested too easily.)
 .SH AUTHOR
 Current version, by John Collins 
-(Version 4.87).
+(Version 4.88).
 Report bugs etc to his e-mail (jcc8 at psu.edu).
 
 Released version can be obtained from CTAN:
