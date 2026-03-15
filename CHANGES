@@ -198,7 +198,7 @@ From v. 4.18 to v. 4.20
         Configuration variable $cleanup_includes_cusdep_generated to
         configure whether this is done.  (Default is off, for backward
         compatibility.) 
-    Remove use of --width option on $pscmd on linux.  It's no longer
+    Remove use of --width option on $pscmd on Linux.  It's no longer
         needed.
     Remove double quotes (if any) surrounding output filename read
         from .log file, to avoid wrong diagnostic message.
@@ -950,7 +950,7 @@ From v. 4.85 to 4.86
 From v. 4.86 to 4.86a
   Correct instructions for remaking the documentation files in INSTALL.
 
-From v. 4.86a to 4.867
+From v. 4.86a to 4.87
   Update documentation for go mode.
   Update installation instructions and latexmk.cmd.
   Correct/improve some items in example_rcfiles/.
@@ -964,3 +964,26 @@ From v. 4.86a to 4.867
    In some cases, latexmk would incorrectly run bibtex and get an error.
    (E.g., with beamer package and its option 'show only notes'.)
 
+From v. 4.87 to 4.88
+  Some corrections to documentation, notably for $dvipdf and $dvips_pdf_switch. 
+  Improve some messages.
+  Miscellaneous bug corrections.
+  Use clock time for timing reports on cygwin and msys, and not just Windows.
+  On Linux, default command for starting previewers is xdg-open.
+  Add lualatex-related item to @file_not_found patterns.
+  Add -cc (continuous compile) option, equiv. to -pvc -view=none.
+  For msys, make better setting for @rc_system_files.
+  Avoid unnecessary extra run(s) of lualatex after font cache is updated.
+  On Windows, change default for $dvipdf so that -dvipdf works on Windows.
+  Prevent loss of memory of state of custom dependencies that occured after
+    a run of *latex that ended early because of an error: When custom
+    dependencies were applied to files generated during a run of *latex,
+    the memory loss would result in much excessive invocation of custom
+    dependencies.
+  Update nomenclature_latexmkrc.
+  Prevent loss of memory of state of cus_deps and their uses after a run of
+    *latex that gives an error. Previously, after a run is aborted early
+    because of a syntax error (etc) and a second run is done after file(s)
+    are corrected, sometimes the loss of memory would cause unnecessary (and
+    sometimes very time consuming) extra runs of cus_deps. 
+  Correct statement of -bibtex* default in on-line help.

@@ -30,7 +30,7 @@ sub asy2tex { return asy2x( $_[0], 'tex' ); }
 sub asy2x   {
    my ($base, $fmt ) = @_;
    my $log_file = "$base.log";
-   my $cmd = "asy -vv -noV -f \"$fmt\" -o \"$base.$fmt\" \"$base\" > '$log_file' 2>&1";
+   my $cmd = "asy -vv -noV -f \"$fmt\" -o \"$base.$fmt\" \"$base\" > \"$log_file\" 2>&1";
    print "asy2x: Running '$cmd'\n";
    my $ret = system($cmd);
    my $FH = undef;
