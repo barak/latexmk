@@ -1,13 +1,11 @@
 Source: latexmk
 Section: tex
-Priority: optional
 Build-Depends: debhelper-compat (= 13),
 	groff
 Maintainer: Debian TeX Task Force <debian-tex-maint@lists.debian.org>
 Uploaders: Hilmar Preuße <hille42@debian.org>,
            Norbert Preining <norbert@preining.info>
-Standards-Version: 4.7.2
-Rules-Requires-Root: no
+Standards-Version: 4.7.3
 Homepage: https://www.cantab.net/users/johncollins/latexmk/index.html
 Vcs-Git: https://salsa.debian.org/tex-team/latexmk.git
 Vcs-Browser: https://salsa.debian.org/tex-team/latexmk
