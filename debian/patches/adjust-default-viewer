@@ -2,15 +2,15 @@ Description: Replace specific commands by Debian commands.
 Author: Norbert Preining <preining@debian.org>
 Forwarded: not-needed
 Origin: Debian
-Last-Update: 2021-09-29
+Last-Update: 2025-03-15
 
 ---
  latexmk.pl |   14 ++++++++------
  1 file changed, 8 insertions(+), 6 deletions(-)
 
---- latexmk.orig/latexmk.pl
-+++ latexmk/latexmk.pl
-@@ -1127,13 +1127,15 @@
+--- latexmk-4.88~ds.orig/latexmk.pl
++++ latexmk-4.88~ds/latexmk.pl
+@@ -1200,13 +1200,15 @@
      #         cannot be updated.  (acroread under MSWIN)
      #    4 => Run command to update.  Command in $dvi_update_command, 
      #    $ps_update_command, $pdf_update_command.
@@ -28,18 +28,19 @@ Last-Update: 2021-09-29
  #    if ( defined $ps_update_signal ) { 
  #        $ps_update_method = 2;  # gv responds to signal to update
  #        $ps_previewer  = 'start gv -nowatch';
-@@ -1146,10 +1148,10 @@
+@@ -1219,10 +1221,11 @@
      # Turn off the fancy options for gv.  Regular gv likes -watch etc
      #   GNU gv likes --watch etc.  User must configure
      $ps_update_method = 0;  # gv -watch watches the ps file
 -    $ps_previewer  = 'start gv %O %S';
 -    $ps_previewer_landscape  = 'start gv -swap %O %S';
 -    $pdf_previewer = 'start acroread %O %S';
--    $pdf_update_method = 1;  # acroread under unix needs manual update
+-    $pdf_update_method = 1;
 +    $ps_previewer  = 'start see %O %S';
 +    $ps_previewer_landscape  = 'start see %O %S';
 +    $pdf_previewer = 'start see %O %S';
 +    $pdf_update_method = 0;  # let us hope that the selected viewer does automatic updates
++
      $lpr = 'lpr %O %S';         # Assume lpr command prints postscript files correctly
      $lpr_dvi =
          'NONE $lpr_dvi variable is not configured to allow printing of dvi files';

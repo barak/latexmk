@@ -4,9 +4,9 @@ Origin: Debian
 Forwarded: No.
 Last-Update: 2024-04-16
 
---- latexmk-4.87~ds.orig/latexmk.1
-+++ latexmk-4.87~ds/latexmk.1
-@@ -4270,7 +4270,7 @@
+--- latexmk-4.88~ds.orig/latexmk.1
++++ latexmk-4.88~ds/latexmk.1
+@@ -4225,7 +4225,7 @@
  See the section `Hooks' for more details.
  
  This adds the subroutine specified in the second argument to latexmk's
@@ -15,7 +15,7 @@ Last-Update: 2024-04-16
  zero otherwise (e.g., if the specified hook stack doesn't exist).
  
  The subroutine can be specified by a reference to the subroutine, as in
-@@ -4440,7 +4440,7 @@
+@@ -4395,7 +4395,7 @@
  values of modification time on file systems is made.  See the description
  of the variable \fB$filetime_causality_threshold\fR for details.
  
@@ -24,7 +24,7 @@ Last-Update: 2024-04-16
  hosted on a different computer than that running latexmk and that the
  system clock times on the two computers are mismatched.  Latexmk
  automatically detects (and reports) any significant mismatch and corrects
-@@ -4564,7 +4564,7 @@
+@@ -4519,7 +4519,7 @@
    cleanup
    The subroutines in this hook stack are called whenever latexmk is about
    to do a cleanup operation.  They can be used, for example, to tailor the
