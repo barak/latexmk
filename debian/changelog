@@ -1,3 +1,9 @@
+latexmk (1:4.88~ds-1.1) UNRELEASED; urgency=medium
+
+  * Update d/watch to v5
+
+ -- Barak A. Pearlmutter <bap@debian.org>  Mon, 23 Mar 2026 16:50:51 +0000
+
 latexmk (1:4.88~ds-1) unstable; urgency=medium
 
   * New upstream release, refresh patches.
