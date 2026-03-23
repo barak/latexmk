@@ -113,6 +113,7 @@ use Cwd "chdir";    # Ensure $ENV{PWD}  tracks cwd.
 use Digest::MD5;
 use Storable qw(nstore retrieve);
 use File::Temp qw(tempfile);
+use Fcntl qw(:flock);
 
 our $Windows_like = ($^O =~ /^(MSWin32|cygwin|msys)$/);
     # This indicates a system where certain actions are needed, like changing
@@ -10408,6 +10409,41 @@ sub rdb_make {
 
 #************************************************************
 
+sub rdb_acquire_dest_lock {
+    # Call: rdb_acquire_dest_lock( $dest_file )
+    # Returns a file handle locked exclusively on a per-destination lock file,
+    # or undef if locking is not applicable (Windows, no dest, etc.).
+    # The lock is released automatically when the caller closes or undef-assigns
+    # the returned file handle.  Call only when $parallel_jobs > 1 and !$Windows_like.
+    #
+    # Lock files live in $tmpdir with names derived from the MD5 digest of the
+    # absolute path of the destination file, so two latexmk instances running
+    # in different directories (or with different $out_dir) still share the
+    # same lock if they target the same absolute destination path.
+    my $dest = shift;
+    return undef unless defined $dest && $dest ne '';
+    # Compute the absolute path.  abs_path() fails for non-existent files on
+    # some Perl versions, so construct it from the cwd when needed.
+    my $abs_dest = file_name_is_absolute($dest)
+                   ? $dest
+                   : catfile( Cwd::getcwd(), $dest );
+    my $lock_tag = Digest::MD5::md5_hex($abs_dest);
+    my $lock_file = "$tmpdir/latexmk.lock.$lock_tag";
+    my $fh;
+    if ( !open( $fh, '>>', $lock_file ) ) {
+        warn "$My_name: Cannot open lock file '$lock_file': $!\n" if $diagnostics;
+        return undef;
+    }
+    if ( !flock( $fh, LOCK_EX ) ) {
+        warn "$My_name: Cannot acquire lock on '$lock_file': $!\n" if $diagnostics;
+        close $fh;
+        return undef;
+    }
+    return $fh;
+} #END rdb_acquire_dest_lock
+
+#************************************************************
+
 sub rdb_make_par_rules {
     # Call: rdb_make_par_rules( \@rules )
     # Parallel variant of rdb_for_some(\@rules, \&rdb_make1).
@@ -10580,6 +10616,7 @@ sub rdb_make_par_rules {
                 # Write a warning to the captured-output file so the parent can
                 # display it; we cannot use STDERR here (it goes to $out_file).
                 warn "$My_name: Failed to store state for rule '$r': $@\n";
+                exit 1;  # Signal parent that state was not saved.
             }
             exit 0;
         }
@@ -10714,6 +10751,37 @@ sub rdb_make1 {
         return;
     }
 
+    # Cross-process deduplication: when running in parallel mode, two
+    # latexmk processes may both decide that they need to produce the
+    # same destination file (e.g., shared/foo.eps → shared/foo.pdf when
+    # two documents include the same graphic).  Use an exclusive file lock
+    # on a per-destination lock file to serialise them.  The process that
+    # gets the lock second re-checks the file system; if the first process
+    # already built the destination, the second one skips the run.
+    my $par_lock_fh;  # held open = lock held; undef or closed = released
+    if (    $parallel_jobs != 0 && $parallel_jobs != 1
+         && !$Windows_like
+         && $$Pcmd_type ne 'primary'
+         && $$Pdest && $$Psource )
+    {
+        $par_lock_fh = rdb_acquire_dest_lock( $$Pdest );
+        if ( $par_lock_fh ) {
+            # Re-check with fresh stat() calls: another process may have
+            # built the destination while we were waiting for the lock.
+            my ($dest_t) = get_time_size( $$Pdest );
+            my ($src_t)  = get_time_size( $$Psource );
+            if ( $dest_t > 0 && $src_t > 0 && $dest_t > $src_t ) {
+                # Destination is newer than source: already up-to-date.
+                print "$My_name: Rule '$rule': '$$Pdest' already up-to-date",
+                      " (built by concurrent process); skipping\n"
+                    unless $silent;
+                $$Pout_of_date = 0;
+                close $par_lock_fh;
+                return;   # nothing to run; $runs left unchanged
+            }
+        }
+    }
+
     $runs++;
     $runs_total++;
 
@@ -10721,6 +10789,9 @@ sub rdb_make1 {
 
     warn_running( "Run number $pass{$rule} of rule '$rule'" );
     $return = &rdb_run1;
+
+    # Release the cross-process lock after the run completes.
+    if ( $par_lock_fh ) { close $par_lock_fh; }
 
     if ($$Pchanged) {
         $newrule_nofile = 1;
