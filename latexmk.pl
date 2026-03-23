@@ -1312,6 +1312,12 @@ our $user_deleted_file_treated_as_changed = 0; # Whether when testing for change
                # compilation of .tex file tests for file existence and
                # adjusts behavior accordingly, instead of simply giving an
                # error. 
+our $parallel_jobs = 0; # Maximum number of top-level TeX files to process
+                        # concurrently (in parallel).
+                        # 0 or 1 = sequential processing (no parallelism).
+                        # -1     = unlimited parallelism (fork one child per file).
+                        # >1     = process up to this many files simultaneously.
+                        # Set by -parallel or -parallel=n option.
 our $max_repeat = 5;    # Maximum times I repeat latex.  Normally
                         # 3 would be sufficient: 1st run generates aux file,
                         # 2nd run picks up aux file, and maybe toc, lof which 
@@ -2287,6 +2293,15 @@ while (defined(local $_ = $ARGV[0])) {
                        $preview_mode = 0;  
                      }
   elsif (/^-p-$/)    { $printout_mode = 0; }
+  elsif (/^-parallel$/) { $parallel_jobs = -1; }
+  elsif (/^-parallel=(.*)$/) {
+      if ( $1 =~ /^\d+$/ ) { $parallel_jobs = $1; }
+      else {
+          warn "$My_name: In '$_', the value is not a non-negative integer\n";
+          $bad_options++;
+      }
+      # Note: -parallel=0 and -parallel=1 both result in sequential processing.
+  }
   elsif (/^-pdf$/)   { $pdf_mode = 1; $dvi_mode = $hnt_mode = $postscript_mode = $xdv_mode = 0; }
   elsif (/^-pdf-$/)  { $pdf_mode = 0; }
   elsif (/^-pdfdvi$/){ $pdf_mode = 3;  $hnt_mode = $xdv_mode = 0; }
@@ -2964,8 +2979,93 @@ $Psource = \$texfile_name;
 my $start_time = time();
 $Prun_time = \$start_time;
 
+# Parallel processing of multiple files.
+# When $parallel_jobs != 0 and $parallel_jobs != 1 and there are multiple files,
+# fork a child process for each file so that up to $par_limit files are compiled
+# concurrently.  Each child runs the FILE loop for its single file and exits;
+# the parent collects exit statuses.
+# When $parallel_jobs is 0 or 1 (the default), all files are processed
+# sequentially in the FILE loop below, preserving the original behaviour.
+our @loop_file_list = @file_list;
+{
+    # $par_limit: effective concurrency limit.
+    # $parallel_jobs == -1 means unlimited: process all files simultaneously.
+    my $par_limit = ($parallel_jobs < 0) ? $num_files : $parallel_jobs;
+    my $do_parallel = ($par_limit >= 2) && ($num_files > 1)
+                      && !$preview_continuous_mode;
+    if ($do_parallel) {
+        if ($deps_handle) {
+            warn "$My_name: WARNING: -parallel used together with dependency-list\n",
+                 "  output (-M/-deps/-deps-out).  The dependency output may be\n",
+                 "  garbled because multiple child processes write to the same\n",
+                 "  file concurrently.\n";
+        }
+        my %par_children;   # pid => filename of running child processes
+        my $par_running = 0;
+        my $par_failure_count = 0;
+        my @par_failed_primaries;
+
+        for my $single_file (@file_list) {
+            # Wait until a processing slot is free.
+            while ($par_running >= $par_limit) {
+                my $done_pid = wait();
+                last if $done_pid == -1;
+                if (exists $par_children{$done_pid}) {
+                    my $child_failed = $? >> 8;
+                    if ($child_failed) {
+                        $par_failure_count++;
+                        push @par_failed_primaries, $par_children{$done_pid};
+                    }
+                    delete $par_children{$done_pid};
+                    $par_running--;
+                }
+            }
+            my $pid = fork();
+            if (!defined $pid) {
+                die "$My_name: Could not fork to process '$single_file': $!\n";
+            }
+            if ($pid == 0) {
+                # Child process: restrict loop to this single file.
+                # Clear inherited state so the child does not try to wait
+                # for sibling processes that were forked by the parent.
+                %par_children = ();
+                @loop_file_list = ($single_file);
+                last;   # Exit the for-loop; fall through to FILE loop below.
+            }
+            # Parent process: record child and continue to next file.
+            $par_children{$pid} = $single_file;
+            $par_running++;
+        }   # end for my $single_file
+
+        if (%par_children) {
+            # We are in the parent: wait for all remaining children.
+            while ($par_running > 0) {
+                my $done_pid = wait();
+                last if $done_pid == -1;
+                if (exists $par_children{$done_pid}) {
+                    my $child_failed = $? >> 8;
+                    if ($child_failed) {
+                        $par_failure_count++;
+                        push @par_failed_primaries, $par_children{$done_pid};
+                    }
+                    delete $par_children{$done_pid};
+                    $par_running--;
+                }
+            }
+            # Merge results from children into the parent's failure tracking.
+            $failure_count += $par_failure_count;
+            push @failed_primaries, @par_failed_primaries;
+            # Parent has no files left to process in the sequential FILE loop.
+            @loop_file_list = ();
+        }
+        # If %par_children is empty here we are in a child process that
+        # `last`ed out of the for-loop above, so @loop_file_list is already
+        # set to ($single_file) and we fall through to the FILE loop.
+    }
+}
+
 FILE:
-foreach $filename ( @file_list )
+foreach $filename ( @loop_file_list )
 {
     # Global variables for making of current file:
     $updated = 0;
@@ -5082,6 +5182,13 @@ sub print_help
   "   -pF <filter> - Filter to apply to postscript file\n",
   "   -p     - print document after generating postscript.\n",
   "            (Can also .dvi or .pdf files -- see documentation)\n",
+  "   -parallel   - when processing multiple files, process them all in parallel,\n",
+  "                 forking one child process per file.\n",
+  "   -parallel=n - when processing multiple files, process up to n of them in\n",
+  "                 parallel simultaneously.  Use n=0 or n=1 to disable parallelism.\n",
+  "                 To avoid intermediate-file collisions, ensure each file uses\n",
+  "                 a distinct aux/output directory (e.g. with -auxdir and\n",
+  "                 -outdir, or by using -cd with per-file directories).\n",
   "   -pretex=<TeX code> - Sets TeX code to be executed before inputting source\n",
   "                    file, if commands suitable configured\n",    
   "   -print=dvi     - when file is to be printed, print the dvi file\n",
