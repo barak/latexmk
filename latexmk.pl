@@ -111,6 +111,8 @@ use Cwd;
 use Cwd "abs_path"; 
 use Cwd "chdir";    # Ensure $ENV{PWD}  tracks cwd.
 use Digest::MD5;
+use Storable qw(nstore retrieve);
+use File::Temp qw(tempfile);
 
 our $Windows_like = ($^O =~ /^(MSWin32|cygwin|msys)$/);
     # This indicates a system where certain actions are needed, like changing
@@ -1312,11 +1314,16 @@ our $user_deleted_file_treated_as_changed = 0; # Whether when testing for change
                # compilation of .tex file tests for file existence and
                # adjusts behavior accordingly, instead of simply giving an
                # error. 
-our $parallel_jobs = 0; # Maximum number of top-level TeX files to process
-                        # concurrently (in parallel).
+our $parallel_jobs = 0; # Controls the level of parallelism in latexmk.
                         # 0 or 1 = sequential processing (no parallelism).
-                        # -1     = unlimited parallelism (fork one child per file).
-                        # >1     = process up to this many files simultaneously.
+                        # -1     = unlimited parallelism.
+                        # >1     = process up to this many jobs simultaneously.
+                        # Affects two independent levels of concurrency:
+                        # (a) Multiple top-level .tex files: up to $parallel_jobs
+                        #     are compiled simultaneously using fork().
+                        # (b) Within a single document: independent pre-primary
+                        #     rules (cusdep conversions, bibtex, makeindex, etc.)
+                        #     are run concurrently before the primary *latex run.
                         # Set by -parallel or -parallel=n option.
 our $max_repeat = 5;    # Maximum times I repeat latex.  Normally
                         # 3 would be sufficient: 1st run generates aux file,
@@ -3000,32 +3007,59 @@ our @loop_file_list = @file_list;
                  "  garbled because multiple child processes write to the same\n",
                  "  file concurrently.\n";
         }
-        my %par_children;   # pid => filename of running child processes
+        my %par_children;   # pid => [$filename, $tmp_output_file]
         my $par_running = 0;
         my $par_failure_count = 0;
         my @par_failed_primaries;
+
+        # Helper: collect one completed child's output + failure status.
+        my $par_collect = sub {
+            my $done_pid = shift;
+            return unless exists $par_children{$done_pid};
+            my ($child_file, $tmp_file) = @{ $par_children{$done_pid} };
+            delete $par_children{$done_pid};
+            $par_running--;
+            # Print output from this child atomically (prevent interleaving).
+            if ( defined $tmp_file && -e $tmp_file ) {
+                if ( open my $fh, '<', $tmp_file ) {
+                    local $/;
+                    my $c = <$fh>;
+                    close $fh;
+                    print $c if defined $c && $c ne '';
+                }
+                unlink $tmp_file;
+            }
+            if ( $? >> 8 ) {
+                $par_failure_count++;
+                push @par_failed_primaries, $child_file;
+            }
+        };
 
         for my $single_file (@file_list) {
             # Wait until a processing slot is free.
             while ($par_running >= $par_limit) {
                 my $done_pid = wait();
                 last if $done_pid == -1;
-                if (exists $par_children{$done_pid}) {
-                    my $child_failed = $? >> 8;
-                    if ($child_failed) {
-                        $par_failure_count++;
-                        push @par_failed_primaries, $par_children{$done_pid};
-                    }
-                    delete $par_children{$done_pid};
-                    $par_running--;
-                }
+                $par_collect->($done_pid);
             }
+            # Create a temp file to capture this child's output.
+            my ($tmp_fh, $tmp_file) = tempfile( UNLINK => 0, SUFFIX => '.latexmk-out' );
             my $pid = fork();
             if (!defined $pid) {
+                close $tmp_fh;
+                unlink $tmp_file;
                 die "$My_name: Could not fork to process '$single_file': $!\n";
             }
             if ($pid == 0) {
-                # Child process: restrict loop to this single file.
+                # Child process: redirect STDOUT/STDERR to the temp file so
+                # output from this file's compilation is buffered and will be
+                # printed atomically by the parent when we complete.
+                open( STDOUT, '>&', $tmp_fh )
+                    or die "$My_name: Cannot redirect STDOUT: $!\n";
+                open( STDERR, '>&', \*STDOUT )
+                    or die "$My_name: Cannot redirect STDERR: $!\n";
+                STDOUT->autoflush(1);
+                close $tmp_fh;
                 # Clear inherited state so the child does not try to wait
                 # for sibling processes that were forked by the parent.
                 %par_children = ();
@@ -3033,7 +3067,8 @@ our @loop_file_list = @file_list;
                 last;   # Exit the for-loop; fall through to FILE loop below.
             }
             # Parent process: record child and continue to next file.
-            $par_children{$pid} = $single_file;
+            close $tmp_fh;  # parent reads the file after child exits
+            $par_children{$pid} = [$single_file, $tmp_file];
             $par_running++;
         }   # end for my $single_file
 
@@ -3042,15 +3077,7 @@ our @loop_file_list = @file_list;
             while ($par_running > 0) {
                 my $done_pid = wait();
                 last if $done_pid == -1;
-                if (exists $par_children{$done_pid}) {
-                    my $child_failed = $? >> 8;
-                    if ($child_failed) {
-                        $par_failure_count++;
-                        push @par_failed_primaries, $par_children{$done_pid};
-                    }
-                    delete $par_children{$done_pid};
-                    $par_running--;
-                }
+                $par_collect->($done_pid);
             }
             # Merge results from children into the parent's failure tracking.
             $failure_count += $par_failure_count;
@@ -5182,13 +5209,18 @@ sub print_help
   "   -pF <filter> - Filter to apply to postscript file\n",
   "   -p     - print document after generating postscript.\n",
   "            (Can also .dvi or .pdf files -- see documentation)\n",
-  "   -parallel   - when processing multiple files, process them all in parallel,\n",
-  "                 forking one child process per file.\n",
-  "   -parallel=n - when processing multiple files, process up to n of them in\n",
-  "                 parallel simultaneously.  Use n=0 or n=1 to disable parallelism.\n",
-  "                 To avoid intermediate-file collisions, ensure each file uses\n",
-  "                 a distinct aux/output directory (e.g. with -auxdir and\n",
-  "                 -outdir, or by using -cd with per-file directories).\n",
+  "   -parallel   - enable parallel processing using fork().  Two levels of\n",
+  "                 concurrency are exploited:\n",
+  "                 1. Multiple top-level .tex files are compiled simultaneously.\n",
+  "                 2. Within each document, independent pre-primary rules\n",
+  "                    (cusdep conversions, bibtex, makeindex, fig2dev, etc.) are\n",
+  "                    run concurrently before the *latex run.\n",
+  "                 Output from parallel jobs is buffered and printed atomically.\n",
+  "   -parallel=n - same as -parallel but limits concurrency to n simultaneous\n",
+  "                 jobs.  Use n=0 or n=1 to disable parallelism.\n",
+  "                 To avoid intermediate-file collisions when compiling multiple\n",
+  "                 .tex files, ensure each file uses a distinct aux/output\n",
+  "                 directory (e.g. with -auxdir and -outdir, or -cd).\n",
   "   -pretex=<TeX code> - Sets TeX code to be executed before inputting source\n",
   "                    file, if commands suitable configured\n",    
   "   -print=dvi     - when file is to be printed, print the dvi file\n",
@@ -10153,7 +10185,17 @@ sub rdb_make {
         #      changed and no run was needed, or because the
         #      number of passes through the rule exceeded the
         #      limit.  In the second case $too_many_passes was set.
-        rdb_for_some( [@pre_primary, $current_primary], \&rdb_make1 );
+        # When $parallel_jobs > 1, run independent pre_primary rules
+        # (e.g., cusdep conversions, bibtex, makeindex) concurrently to
+        # exploit parallelism within a single document's compilation.
+        if ( $parallel_jobs != 0 && $parallel_jobs != 1
+             && scalar(@pre_primary) > 1 ) {
+            rdb_make_par_rules( \@pre_primary );
+            rdb_for_some( [$current_primary], \&rdb_make1 );
+        }
+        else {
+            rdb_for_some( [@pre_primary, $current_primary], \&rdb_make1 );
+        }
         if ($switched_primary_output) {
             print "=========SWITCH OF OUTPUT WAS DONE.\n";
             next PASS;
@@ -10363,6 +10405,203 @@ sub rdb_make {
         );
     return $failure;
 } #END rdb_make
+
+#************************************************************
+
+sub rdb_make_par_rules {
+    # Call: rdb_make_par_rules( \@rules )
+    # Parallel variant of rdb_for_some(\@rules, \&rdb_make1).
+    # Runs the rules concurrently (up to $parallel_jobs at a time) using
+    # fork().  Each child captures its STDOUT/STDERR to a temp file so that
+    # output is printed atomically by the parent when the child finishes,
+    # preventing interleaving of messages from simultaneous jobs.
+    #
+    # Rule state changes (out_of_date flag, source-file hashes, last_result,
+    # etc.) are communicated back to the parent via a Storable temp file so
+    # that the parent's %rule_db is consistent after all children complete.
+    #
+    # Falls back to the sequential rdb_for_some when parallelism is not
+    # applicable: sequential mode ($parallel_jobs <= 1), Windows (no fork),
+    # or a single rule in the list.
+    #
+    # Must be called from within rdb_make's dynamic scope so the package
+    # variables $runs, $runs_total, %pass, $too_many_passes, $newrule_nofile,
+    # and $failure are visible with their rdb_make-local values.
+
+    our ($runs, $runs_total, %pass, $too_many_passes, $newrule_nofile, $failure);
+
+    my $rules_ref = shift;
+    my @rules = grep { $_ && rdb_rule_exists($_) } @$rules_ref;
+    return unless @rules;
+
+    my $par_limit = ($parallel_jobs < 0) ? scalar(@rules) : $parallel_jobs;
+
+    # Sequential fallback when parallelism is not useful.
+    if ( $par_limit <= 1 || scalar(@rules) <= 1 || $Windows_like ) {
+        rdb_for_some( $rules_ref, \&rdb_make1 );
+        return;
+    }
+
+    my %par_jobs;   # pid => { rule, out_file, state_file }
+    my $par_running = 0;
+
+    # Helper: apply one completed child's state back to the parent.
+    my $collect = sub {
+        my $done_pid = shift;
+        my $job = $par_jobs{$done_pid};
+        return unless defined $job;
+        delete $par_jobs{$done_pid};
+
+        my $r          = $job->{rule};
+        my $out_file   = $job->{out_file};
+        my $state_file = $job->{state_file};
+
+        # Print child output atomically to prevent interleaving.
+        if ( defined $out_file && -e $out_file ) {
+            if ( open my $fh, '<', $out_file ) {
+                local $/;
+                my $c = <$fh>;
+                close $fh;
+                print $c if defined $c && $c ne '';
+            }
+            unlink $out_file;
+        }
+
+        # Restore rule state from Storable snapshot written by child.
+        if ( defined $state_file && -e $state_file ) {
+            my $state = eval { retrieve($state_file) };
+            if ($@) {
+                warn "$My_name: Failed to retrieve state for rule '$r' from '$state_file': $@\n";
+            }
+            unlink $state_file;
+            if ( defined $state && ref $state eq 'HASH' ) {
+                $failure         ||= $state->{failure};
+                $too_many_passes ||= $state->{too_many_passes};
+                $newrule_nofile  ||= $state->{newrule_nofile};
+                if ( $state->{ran} ) {
+                    $runs++;
+                    $runs_total++;
+                }
+                $pass{$r} = $state->{pass} if defined $state->{pass};
+
+                # Apply rule data changes to parent's %rule_db entry.
+                rdb_one_rule( $r, sub {
+                    $$Pout_of_date      = $state->{out_of_date}
+                        if defined $state->{out_of_date};
+                    $$Pout_of_date_user = $state->{out_of_date_user}
+                        if defined $state->{out_of_date_user};
+                    $$Prun_time         = $state->{run_time}
+                        if defined $state->{run_time};
+                    $$Pchanged          = $state->{changed}
+                        if defined $state->{changed};
+                    $$Plast_result      = $state->{last_result}
+                        if defined $state->{last_result};
+                    $$Plast_result_info = $state->{last_result_info}
+                        if defined $state->{last_result_info};
+                    $$Plast_message     = $state->{last_message}
+                        if defined $state->{last_message};
+                    # Sync source-file state (mtime/size/md5 snapshots).
+                    if ( ref $state->{PHsource} eq 'HASH' ) {
+                        foreach my $f ( keys %{ $state->{PHsource} } ) {
+                            $$PHsource{$f} = $state->{PHsource}{$f};
+                        }
+                    }
+                } );
+            }
+        }
+    };  # end $collect
+
+    for my $r (@rules) {
+        # Throttle: wait for a free slot before forking the next child.
+        while ($par_running >= $par_limit) {
+            my $done_pid = wait();
+            last if $done_pid == -1;
+            next unless exists $par_jobs{$done_pid};
+            $collect->($done_pid);
+            $par_running--;
+        }
+
+        # Create temp files: one for the child's stdio, one for its state.
+        my ($out_fh,   $out_file)   = tempfile( UNLINK => 0, SUFFIX => '.latexmk-out' );
+        my ($state_fh, $state_file) = tempfile( UNLINK => 0, SUFFIX => '.latexmk-st'  );
+        close $out_fh;
+        close $state_fh;
+
+        my $pid = fork();
+        if ( !defined $pid ) {
+            # Fork failed – run serially as a fallback.
+            unlink $out_file, $state_file;
+            warn "$My_name: Cannot fork for rule '$r': $!\n";
+            rdb_for_some( [$r], \&rdb_make1 );
+            next;
+        }
+
+        if ( $pid == 0 ) {
+            # ---- Child process ----
+            # Redirect stdio so output is captured, not interleaved with siblings.
+            open( STDOUT, '>', $out_file )
+                or die "$My_name: Cannot redirect STDOUT for '$r': $!\n";
+            open( STDERR, '>&', \*STDOUT )
+                or die "$My_name: Cannot redirect STDERR for '$r': $!\n";
+            STDOUT->autoflush(1);
+
+            # Clear inherited job table so this child doesn't accidentally
+            # wait() for its sibling rule processes.
+            %par_jobs = ();
+
+            my $ran_before = $runs;
+            rdb_one_rule( $r, \&rdb_make1 );
+
+            # Snapshot the rule's updated state for the parent.
+            my %state = (
+                failure         => $failure,
+                too_many_passes => $too_many_passes,
+                newrule_nofile  => $newrule_nofile,
+                ran             => ( $runs > $ran_before ) ? 1 : 0,
+                pass            => ( $pass{$r} // 0 ),
+            );
+            rdb_one_rule( $r, sub {
+                $state{out_of_date}      = $$Pout_of_date;
+                $state{out_of_date_user} = $$Pout_of_date_user;
+                $state{run_time}         = $$Prun_time;
+                $state{changed}          = $$Pchanged;
+                $state{last_result}      = $$Plast_result;
+                $state{last_result_info} = $$Plast_result_info;
+                $state{last_message}     = $$Plast_message;
+                # Deep-copy source-file hashes (mtime/size/md5/dummy arrays).
+                my %src;
+                foreach my $f ( keys %$PHsource ) {
+                    $src{$f} = [ @{ $$PHsource{$f} } ];
+                }
+                $state{PHsource} = \%src;
+            } );
+            eval { nstore( \%state, $state_file ) };
+            if ($@) {
+                # Write a warning to the captured-output file so the parent can
+                # display it; we cannot use STDERR here (it goes to $out_file).
+                warn "$My_name: Failed to store state for rule '$r': $@\n";
+            }
+            exit 0;
+        }
+
+        # ---- Parent process ----
+        $par_jobs{$pid} = {
+            rule       => $r,
+            out_file   => $out_file,
+            state_file => $state_file,
+        };
+        $par_running++;
+    }   # end for my $r
+
+    # Drain remaining children.
+    while ($par_running > 0) {
+        my $done_pid = wait();
+        last if $done_pid == -1;
+        next unless exists $par_jobs{$done_pid};
+        $collect->($done_pid);
+        $par_running--;
+    }
+} #END rdb_make_par_rules
 
 #-------------------
 
