@@ -66,7 +66,7 @@ BEGIN {
     # blocks.
     $my_name = 'latexmk';
     $My_name = 'Latexmk';
-    $version_num = '4.88';
+    $version_num = '4.88.parallel';
     $version_details = "$My_name, John Collins, 9 March 2026. Version $version_num";
 }
 
@@ -2303,7 +2303,7 @@ while (defined(local $_ = $ARGV[0])) {
   elsif (/^-p-$/)    { $printout_mode = 0; }
   elsif (/^-parallel$/) { $parallel_jobs = -1; }
   elsif (/^-parallel=(.*)$/) {
-      if ( $1 =~ /^\d+$/ ) { $parallel_jobs = $1; }
+      if ( $1 =~ /^(\d+)$/ ) { $parallel_jobs = $1; }
       else {
           warn "$My_name: In '$_', the value is not a non-negative integer\n";
           $bad_options++;
@@ -2582,6 +2582,10 @@ if ( $Windows_like ) {
 else { @file_list = @command_line_file_list; }
 @file_list = uniq1( @file_list );
 
+if ( $Windows_like && $parallel_jobs != 0 && $parallel_jobs != 1 ) {
+    warn "$My_name: WARNING: -parallel is not supported on Windows; ignoring it.\n";
+    $parallel_jobs = 0;
+}
 
 # Check we haven't selected mutually exclusive modes.
 # Note that -c overrides all other options, but doesn't cause
@@ -3055,6 +3059,8 @@ our @loop_file_list = @file_list;
                 # Child process: redirect STDOUT/STDERR to the temp file so
                 # output from this file's compilation is buffered and will be
                 # printed atomically by the parent when we complete.
+                open( STDIN,  '<', '/dev/null' )
+                    or die "$My_name: Cannot redirect STDIN: $!\n";
                 open( STDOUT, '>&', $tmp_fh )
                     or die "$My_name: Cannot redirect STDOUT: $!\n";
                 open( STDERR, '>&', \*STDOUT )
@@ -10575,6 +10581,8 @@ sub rdb_make_par_rules {
         if ( $pid == 0 ) {
             # ---- Child process ----
             # Redirect stdio so output is captured, not interleaved with siblings.
+            open( STDIN,  '<', '/dev/null' )
+                or die "$My_name: Cannot redirect STDIN for '$r': $!\n";
             open( STDOUT, '>', $out_file )
                 or die "$My_name: Cannot redirect STDOUT for '$r': $!\n";
             open( STDERR, '>&', \*STDOUT )
