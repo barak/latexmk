@@ -2,14 +2,14 @@
 use warnings;
 use strict;
 
+# ?? Clean up parallelization code:
+# (a) Both fork sections fall back to serial when can't fork to
+#     child; only one does it now.
+# (b) Consolidate fork sections into 1 subroutine.  This will need
+#     reorganization of main FILE loop, however.
+#
 # ?? Put in locale section from png2pdf.pl, ETC!!!
 #
-# ?? If $Windows_like, make sure @file_list is populated with correctly
-# fixed directory separators, and that glob is done correctly.  (In UNC
-# names, glob fails with a pattern starting '\\Mac\' but succeeds with
-# '//Mac/'.  See png2pdf.pl also. The code for populating @file_list is too
-# split up!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
 # ???!!! Rationalize creation of cusdep rule instance:
 #           Factor into subroutine.
 #           Don't create if rule exists
@@ -21,7 +21,7 @@ use strict;
 
 # !!!!!!!!!!!!!SEE sub config_to_mine, and improve error message.
 
-## Copyright John Collins 1998-2025
+## Copyright John Collins 1998-2026
 ##           (username jcc8 at node psu.edu)
 ##      (and thanks to David Coppit (username david at node coppit.org) 
 ##           for suggestions) 
@@ -66,8 +66,8 @@ BEGIN {
     # blocks.
     $my_name = 'latexmk';
     $My_name = 'Latexmk';
-    $version_num = '4.88';
-    $version_details = "$My_name, John Collins, 9 March 2026. Version $version_num";
+    $version_num = '4.89.beta';
+    $version_details = "$My_name, John Collins, 5 April 2026. Version $version_num";
 }
 
 # Ensure that when STDERR and STDOUT are both redirected, the results are
@@ -111,6 +111,13 @@ use Cwd;
 use Cwd "abs_path"; 
 use Cwd "chdir";    # Ensure $ENV{PWD}  tracks cwd.
 use Digest::MD5;
+
+# !!!!!!!!!!!!! START PARALLEL CODE
+use Storable qw(nstore retrieve);
+use File::Temp qw(tempfile);
+use Fcntl qw(:flock);
+use POSIX ":sys_wait_h";
+# !!!!!!!!!!!!! END PARALLEL CODE
 
 our $Windows_like = ($^O =~ /^(MSWin32|cygwin|msys)$/);
     # This indicates a system where certain actions are needed, like changing
@@ -216,25 +223,56 @@ if ($^O eq "MSWin32") {
               "  I'LL CONTINUE WITH UTF-8.\n"; 
     }
     else {
-        $Win_revert_settings =
-              ($CP_init_Win_console_in ne $CP_Win_system)
-              || ($CP_init_Win_console_out ne $CP_Win_system);
+      $Win_revert_settings = ($CP_init_Win_console_in ne $CP_Win_system)
+                             || ($CP_init_Win_console_out ne $CP_Win_system);
+      if ($Win_revert_settings) {
         print
         "Initial Win CP for (console input, console output, system): ",
         "(CP$CP_init_Win_console_in, CP$CP_init_Win_console_out, CP$CP_Win_system)\n",
         "I changed them all to CP$CP_Win_system\n";
+      }
+      else {
+        # No comment
+      }
     }
+      
 }
 $no_CP_conversions = ($CS_system eq 'UTF-8') || ($CS_system eq 'CP65001');
 
 # Ensure that on ctrl/C interruption, etc, Windows console CPs are restored:
 use sigtrap qw(die untrapped normal-signals);
+
+BEGIN {
+    our $PID_top_level = $$;  # Save PID of overall top-level parent
+                          # Then a forked process can determine it's a child
+                          # by comparing it PID ($$) with $PID_top_level.
+                          # Uses: E.g., in END block to do things that only
+                          #   the top-level parent should do. 
+    our %lock_files = ();
+}
 END {
-    if ($Win_revert_settings ) {
-        warn "Reverting Windows console CPs to ",
-             "(in,out) = ($CP_init_Win_console_in,$CP_init_Win_console_out)\n";
-        Win32::SetConsoleCP($CP_init_Win_console_in);
-        Win32::SetConsoleOutputCP($CP_init_Win_console_out);
+    # Clean ups to be done for top-level parent, only.
+    our $PID_top_level;
+    our %lock_files;
+    our $diagnostics;
+
+    my $am_parent = ($$ == $PID_top_level);
+    if ($am_parent) {
+        if (%lock_files) {
+            my $num = %lock_files;
+            say "Deleting $num lock files...";
+            show_array( "Lock files",  sort keys %lock_files )
+                if $diagnostics;
+            for ( keys %lock_files) { unlink( $_ ) or warn "Cannot delete '$_': $!"; }
+        }
+        if ($Win_revert_settings) {
+            # Revert Windows CP settings, but only if I am the top-level parent.
+            # Otherwise the CPs are incorrect for other children and the parent.
+            warn "Reverting Windows console CPs to ",
+                 "(in,out) = ($CP_init_Win_console_in,$CP_init_Win_console_out)\n";
+            Win32::SetConsoleCP($CP_init_Win_console_in);
+            Win32::SetConsoleOutputCP($CP_init_Win_console_out);
+        }
     }
 }
 
@@ -342,11 +380,14 @@ our @file_not_found = (
 # we will treat as if they were actual errors.
 our @bad_warnings = (
     # Remember: \\ in perl inside single quotes gives a '\', so we need
-    # '\\\\' to get '\\' in the regexp.
+    # '\\\\' to get '\\' in the regexp.  There are two levels of escaping
+    # here: One from the source code here to the string for regex, and then
+    # one from the string for the regex to the character that is searched
+    # for. 
     '^\(\\\\end occurred when .* was incomplete\)',
     '^\(\\\\end occurred inside .*\)',
 );
-our $bad_warning_is_error = 0; 
+our $bad_warning_is_error = 0;
 
 # Characters that we won't allow in the name of a TeX file.
 # Notes: Some are disallowed by TeX itself (at least, not without dirty
@@ -424,10 +465,10 @@ our @latex_file_hooks = ();
 our %hooks = ();
 for ( 'before_xlatex', 'after_xlatex', 'after_xlatex_analysis', 'after_main_pdf',
       'cleanup', 'cleanup_extra_full',
-      'compile_begin', 'compile_success', 'compile_warning', 'compile_failure', 'compile_end', 
-    ) {
-    $hooks{$_} = [];
-}
+      'compile_begin', 'compile_success', 'compile_warning',
+      'compile_failure', 'compile_end', 
+    )
+    { $hooks{$_} = []; }
 $hooks{aux_hooks} = \@aux_hooks;
 $hooks{latex_file_hooks} = \@latex_file_hooks;
 
@@ -1311,7 +1352,33 @@ our $user_deleted_file_treated_as_changed = 0; # Whether when testing for change
                # Primary purpose is to cover cases where behavior of
                # compilation of .tex file tests for file existence and
                # adjusts behavior accordingly, instead of simply giving an
-               # error. 
+               # error.
+
+# !!!!!!!!!!!!! START PARALLEL CODE
+our %lock_files;  # Contains list of lock files; we can delete them if
+    # desired.  But it may be better to keep them
+our $parallel_jobs = 0; # Controls the level of parallelism in latexmk.
+                        # 0 or 1 = sequential processing (no parallelism).
+                        # -1     = unlimited parallelism.
+                        # >1     = process up to this many jobs simultaneously.
+                        # Affects two independent levels of concurrency:
+                        # (a) Multiple top-level .tex files: up to $parallel_jobs
+                        #     are compiled simultaneously using fork().
+                        # (b) Within a single document: independent pre-primary
+                        #     rules (cusdep conversions, bibtex, makeindex, etc.)
+                        #     are run concurrently before the primary *latex run.
+                        # Set by -parallel or -parallel=n option.
+our $parallel_default_jobs = -1; # Default value for $parallel_jobs when
+                        # parallel mode is enabled.
+our $parallel_diagnostics = 1;  # Whether to show diagnostics for parallelism.
+our $child = 0;     # 1 in document-level child, 2 in pre-primary child
+our $doc_state_file = undef;  # Name of file for document-level child to
+      # write state information for communicating to parent.
+      # It needs to be global variable (with possible localization)
+      # since document-level parallelization uses top-level code and exit
+      # of document-level children is at main exit of latexmk script not earlier.
+# !!!!!!!!!!!!! END PARALLEL CODE
+
 our $max_repeat = 5;    # Maximum times I repeat latex.  Normally
                         # 3 would be sufficient: 1st run generates aux file,
                         # 2nd run picks up aux file, and maybe toc, lof which 
@@ -1326,10 +1393,15 @@ our $max_repeat = 5;    # Maximum times I repeat latex.  Normally
                         # At least one document class (JHEP.cls) works
                         # in such a way that a 4th run is needed.  
                         # We allow an extra run for safety for a
-                        # maximum of 5. Needing further runs is
-                        # usually an indication of a problem; further
-                        # runs may not resolve the problem, and
-                        # instead could cause an infinite loop.
+                        # maximum of 5.
+                        # Large documents may need a very few more, e.g.,
+                        # from scratch my qcd book needs 5 or 6.
+                        # But often needing more than one or 2 further runs is
+                        # an indication of a problem; further runs may not
+                        # resolve the problem; some situations have an
+                        # infinite loop where no number of extra runs is
+                        # sufficient. Whether in such cases, the problem is
+                        # with the document or latexmk is a separate issue. 
 our @cus_dep_list = ();     # Custom dependency list
 our @default_files = ( '*.tex' );   # Array of LaTeX files to process when 
                         # no files are specified on the command line.
@@ -1520,16 +1592,20 @@ our $pvc_timeout_mins = 30;
 # Whether to report processing time: 
 our $show_time = 0;
 
-# Whether times computed are clock times (HiRes) since Epoch, or are
-# processing times for this process and child processes, as reported by
-# times().  The second is the best, if accurate.  But on MSWin32, times()
-# does not include subprocess times, so we use clock time instead.
+# Whether times computed are obtained from clock times (HiRes) since Epoch,
+# or are processing times for this process and child processes, as reported
+# by times().  The second is the best, if accurate.  But on MSWin32,
+# times() does not include subprocess times, so we use clock time instead.
+# On cygwin and msys, times() behaves in a more Unix-like way, but I
+# suspect only for cygwin programs.  It definitely does not include times
+# for invoked native Windows programs. Presumably this is an issue about
+# the underlying OS, so we use clock times only on all of these systems:
 our $times_are_clock = 0;
-if ($^O =~ /^(MSWin32|cygwin|msys)$/) { $times_are_clock = 1; }
+if ($Windows_like) { $times_are_clock = 1; }
 
 
 # Data for 1 run and global (ending in '0'):
-our ( $clock1, $processing_time1, $processing_time0, @timings1, @timings0);
+our ( $clock0, $clock1, $processing_time1, $processing_time0, @timings1, @timings0);
 &init_timing_all;
 
 
@@ -2287,6 +2363,20 @@ while (defined(local $_ = $ARGV[0])) {
                        $preview_mode = 0;  
                      }
   elsif (/^-p-$/)    { $printout_mode = 0; }
+
+# !!!!!!!!!!!!! START PARALLEL CODE
+  elsif (/^-parallel$/) { $parallel_jobs = $parallel_default_jobs; }
+  elsif (/^-parallel=(.*)$/) {
+      if ( $1 =~ /^(-?\d+)$/ ) { $parallel_jobs = $1;}
+      else {
+          warn "$My_name: In '$_', the value is not an integer\n";
+          $bad_options++;
+      }
+      # Note: -parallel=0 and -parallel=1 both result in sequential processing.
+  }
+  elsif ( /^-parallel-$/ || /^-noparallel$/ ) { $parallel_jobs = 0; }
+# !!!!!!!!!!!!! END PARALLEL CODE
+
   elsif (/^-pdf$/)   { $pdf_mode = 1; $dvi_mode = $hnt_mode = $postscript_mode = $xdv_mode = 0; }
   elsif (/^-pdf-$/)  { $pdf_mode = 0; }
   elsif (/^-pdfdvi$/){ $pdf_mode = 3;  $hnt_mode = $xdv_mode = 0; }
@@ -2488,6 +2578,18 @@ if ( $bad_options > 0 ) {
     &exit_help( "Bad options specified" );
 }
 
+# !!!!!!!!!!!!! START PARALLEL CODE
+if ( ($^O eq 'MSWin32') && ($parallel_jobs != 0) && ($parallel_jobs != 1) ) {
+    warn "$My_name: There are anomalies in using parallel processing on Windows.\n",
+        "   So I'll revert to serial processing.\n",
+        "   To use the parallel option under Windows, one possibility is to install\n",
+        "   Cygwin and use its perl to run latexmk.pl\n";
+    # Note: Only actual MSWin32 matters here.  If $^O is 'cygwin' or 'msys', then
+    #  the Unix kind of fork is implemented and can be used.
+    $parallel_jobs = 0;
+}
+# !!!!!!!!!!!!! END PARALLEL CODE
+
 print "$My_name: This is $version_details.\n",
    unless $silent;
 
@@ -2540,7 +2642,7 @@ if ( $Windows_like ) {
     # Windows in all normal situations.  It avoids problems when filenames
     # are passed to *latex, which would treat '\' as introducing a TeX
     # macro.  It avoids problems with globbing, where Perl's glob appears
-    # not to work with UNC names athat start with '\\', as in
+    # not to work with UNC names that start with '\\', as in
     # '\\Mac\Home\...', but does work if they start with '//'.
     # (That statement is true for Perl 5.32.1, but may well be version
     # dependent.)
@@ -2549,12 +2651,23 @@ if ( $Windows_like ) {
     # where names containing wild-card patterns are passed to invoked
     # programs for interpretation.  This is different to the behavior of
     # Unix command shells.
-    # At this point it would be a good idea to check for '~' in filenames,
-    # since these can arise in SFNs resulting from a glob, and aren't
-    # acceptable for use with *latex.
-    for (@command_line_file_list) { s[\\][/]; }
+
+    for (@command_line_file_list) { s[\\][/]g; }
     # Preserve ordering of files
     @file_list = glob_list1(@command_line_file_list);
+    # For safety, ensure there are no \\s after glob    
+    for (@file_list) { s[\\][/]g; }
+    my @tilde_names = ();
+    for (@file_list) { if ( /~/ ) { push @tilde_names, $_; }}
+    if (@tilde_names) {
+        warn << "EOM";
+$My_name: After globbing, some filenames contain '~'.  This may result from
+    a wild card glob that matches name(s) with containing those Unicode
+    characters that are not representable in the system code page.
+    The globbing gives short filenames instead, and I cannot work with them.
+EOM
+        show_array( "Tilde-containing files", @tilde_names );
+    }
 }
 else { @file_list = @command_line_file_list; }
 @file_list = uniq1( @file_list );
@@ -2964,9 +3077,183 @@ $Psource = \$texfile_name;
 my $start_time = time();
 $Prun_time = \$start_time;
 
-FILE:
-foreach $filename ( @file_list )
+# !!!!!!!!!!!!! START PARALLEL CODE
+# Parallel processing of multiple .tex documents.
+# When $parallel_jobs != 0 and $parallel_jobs != 1 and there are multiple .tex files,
+# fork a child process for each file so that up to $par_limit files are compiled
+# concurrently.  Each child runs the FILE loop for its single file and exits;
+# the parent collects exit statuses.
+# When $parallel_jobs is 0 or 1 (the default), all files are processed
+# sequentially in the FILE loop below, preserving the original behavior.
+our @loop_file_list = @file_list;
 {
+    # $par_limit: effective concurrency limit.
+    # $parallel_jobs == -1 means unlimited: process all files simultaneously.
+    my $par_limit = ($parallel_jobs < 0) ? $num_files : $parallel_jobs;
+    my $do_parallel = ($par_limit >= 2)
+                      && ($num_files > 1)
+                      && !$preview_continuous_mode
+                      && !$cleanup_only
+        ;
+    if ($do_parallel) {
+        if ($deps_handle) {
+            warn "$My_name: WARNING: -parallel used together with dependency-list\n",
+                 "  output (-M/-deps/-deps-out).  The dependency output may be\n",
+                 "  garbled because multiple child processes write to the same\n",
+                 "  file concurrently.\n";
+        }
+        my %par_children;   # pid => [$filename, $tmp_output_file]
+        my $par_running = 0;
+        my $par_failure_count = 0;
+        my @par_failed_primaries;
+
+        # Helper: collect one completed child's output + failure status.
+        my $par_collect = sub {
+            my $done_pid = shift;
+            return unless exists $par_children{$done_pid};
+            my ($child_file, $out_file, $state_file) = @{ $par_children{$done_pid} };
+            delete $par_children{$done_pid};
+            $par_running--;
+            # Print output from this child atomically (prevent interleaving).
+            if ( defined $out_file && -e $out_file ) {
+                if ( open my $fh, '<', $out_file ) {
+                    local $/;
+                    my $c = <$fh>;
+                    close $fh;
+                    if (defined $c && $c ne '') {
+                        print "=====START OF OUTPUT FROM PID $done_pid\n";
+                        print $c;
+                        print "=====END OF OUTPUT FROM PID $done_pid\n";
+                    }
+                }
+                unlink $out_file;
+            }
+            if ( defined $state_file && -e $state_file ) {
+                my $PHstate = eval { retrieve($state_file) };
+                if ($@) {
+                    warn "$My_name: Failed to retrieve state for document '$child_file' from '$state_file': $@\n";
+                }
+                else {
+                    my %state = %$PHstate;
+                    push @timings0, @{$state{timings0}};
+                    push @timings1, @{$state{timings1}};
+                    if ($state{lock_files}) {
+                        for (keys %{$state{lock_files}}) { $lock_files{$_} = 1;}
+                    }
+                }
+                unlink $state_file;
+            }
+            if ( $? >> 8 ) {
+                $par_failure_count++;
+                push @par_failed_primaries, $child_file;
+            }
+        };
+
+        for my $single_file (@file_list) {
+            # Wait until a processing slot is free.
+            while ($par_running >= $par_limit) {
+                # Special return values:
+                #    wait and waitpid: -1 for no more children.
+                #    waitpid: 0 if there are unfinished running children.
+                my @finished = ();
+                # Wait for a child to terminate
+                my $done_pid = wait();
+                last if $done_pid == -1;
+                push @finished, $done_pid;
+                # Harvest all other finished children to avoid too many zombies
+                while (1) {
+                    my $done_pid1 = ( waitpid(-1, &WNOHANG) );
+                    last if ( ($done_pid1 == -1) || ($done_pid1 == 0) );
+                    push @finished, $done_pid1;
+                }
+                for (sort @finished) {
+                    $par_collect->($_);
+                }
+                say "$$ collected 1+$#finished terminated processes.";
+            }
+            # Create temp files to capture this child's output and state information.
+            my ($out_fh, $out_file) = tempfile( UNLINK => 0, SUFFIX => '.latexmk-out' );
+            my ($state_fh, $state_file) = tempfile( UNLINK => 0, SUFFIX => '.latexmk-st'  );
+            my $pid = fork();
+            if (!defined $pid) {
+                close $out_fh;
+                unlink $out_file;
+                close $state_fh;
+                unlink $state_file;
+                die "$My_name: Could not fork to process '$single_file': $!\n";
+            }
+            if ($pid == 0) {
+                say "==========\nI am child, PID $$, for document '$single_file'\n",
+#                    "    TMP FILES '$out_file' and '$state_file'"
+                    if $parallel_diagnostics;
+                $doc_state_file = $state_file;
+                $child = 1;
+                # Child process:
+                # Redirect STDIN to /dev/null, so that *latex exits
+                #   automatically at an error prompt instead of needing
+                #   input from user.
+                # Redirect STDOUT/STDERR totemp file, so that output
+                #   from this child process is buffered; it will be
+                #   printed atomically by the parent when we complete,
+                #   without being mixed with output from other children.
+                open( STDIN, '<', '/dev/null' )
+                    or die "$My_name: Cannot redirect STDIN: $!\n"; 
+                open( STDOUT, '>&', $out_fh )
+                    or die "$My_name: Cannot redirect STDOUT: $!\n";
+                open( STDERR, '>&', \*STDOUT )
+                    or die "$My_name: Cannot redirect STDERR: $!\n";
+                STDOUT->autoflush(1);
+                close $out_fh;
+                close $state_fh;
+                # Clear parent's accumulated timings, so I only deal with my own:
+                @timings0 = @timings1 = ();
+                # Clear list of lock files, so child only returns its own lock files
+                %lock_files = ();
+                # Clear inherited state so the child does not try to wait
+                # for sibling processes that were forked by the parent.
+                %par_children = ();
+                @loop_file_list = ($single_file);
+                last;   # Exit the for-loop; fall through to FILE loop below.
+            }
+            # Parent process: record child and continue to next file.
+            close $out_fh;   # parent reads the file after child exits
+            close $state_fh; # parent reads the file after child exits
+            $par_children{$pid} = [$single_file, $out_file, $state_file];
+            $par_running++;
+            say "=== I am top-level parent with $par_running children running;\n",
+                "  I have just started child, PID=$pid, for document '$single_file'."
+                if $parallel_diagnostics;
+        }   # end for my $single_file
+        if (%par_children) {
+            # We are in the parent: wait for all remaining children.
+            while ($par_running > 0) {
+                my $done_pid = wait();
+                last if $done_pid == -1;
+                $par_collect->($done_pid);
+            }
+            if (%par_children) {
+                # Somehow, the wait()s didn't collect the information.
+                warn "My_name: Children whose saved data I've not used.  I'll deal with this.\n";
+                for (keys %par_children) { $par_collect->($_); }
+            }
+            # Merge results from children into the parent's failure tracking.
+            $failure_count += $par_failure_count;
+            push @failed_primaries, @par_failed_primaries;
+            # Parent has no files left to process in the sequential FILE loop.
+            @loop_file_list = ();
+        }
+        # ????? I don't understand copilot's comment here.
+        # This is the do_parallel section for the parent.
+        # If %par_children is empty here we are in a child process that
+        # `last`ed out of the for-loop above, so @loop_file_list is already
+        # set to ($single_file) and we fall through to the FILE loop.
+    }
+}
+# !!!!!!!!!!!!! PARALLEL CODE
+
+FILE:
+# !!!!!!!!!!!!! PARALLEL CODE NEXT LINE MODIFIED
+foreach $filename ( @loop_file_list ) {
     # Global variables for making of current file:
     $updated = 0;
     $failure = 0;  # Set nonzero to indicate failure at some point of 
@@ -3142,14 +3429,35 @@ foreach $filename ( @file_list )
         }
     }
     
+    run_hooks( 'compile_end' );
     if ($failure > 0) {
-        if ($failure_cmd) { Run_subst( $failure_cmd ); }
+        if ($failure_cmd) {
+            Run_subst( $failure_cmd );
+            run_hooks( 'compile_failure' );
+        }
         next FILE;
     } else {
-        if ($success_cmd) { Run_subst( $success_cmd ); }
+        if ($success_cmd) {
+           Run_subst( $success_cmd );
+           run_hooks( 'compile_success' );
+        }
     }
 } # end FILE
 continue {
+    if ($child && $doc_state_file) {
+        my %state = ( timings0 => \@timings0,
+                      timings1 => \@timings1,
+                      lock_files => \%lock_files,
+                    );
+        eval { nstore( \%state, $doc_state_file ) };
+        if ($@) {
+            # Write a warning to the captured-output file so the parent can
+            # display it; we cannot use STDERR here (it goes to $out_file).
+            warn "$My_name: Failed to store state for document '$filename': $@\n";
+            exit 1;  # Signal parent that state was not saved.
+        }
+    }
+
     if ($deps_handle) { deps_list($deps_handle); }
     # If requested, print the list of rules.  But don't do this in -pvc
     # mode, since the rules list has already been printed.
@@ -3173,12 +3481,12 @@ continue {
         push @failed_primaries, $filename;
     }
     &ifcd_popd;
-    if ($show_time && ! $preview_continuous_mode) { &show_timing1; };
+    if ($show_time && ! $preview_continuous_mode) { &show_timing1;};
     print "\n";
 }
 close($deps_handle) if ( $deps_handle );
 
-if ( $show_time && ( ($#file_list > 0) || $preview_continuous_mode ) ) {
+if ( $show_time && (! $child) && ( ($#file_list > 0) || $preview_continuous_mode ) ) {
     print "\n";
     show_timing_grand();
 }
@@ -3248,12 +3556,36 @@ if ( $emulate_aux_switched ) {
 
 ############################
 
+sub processing_time {
+    # Return time used.
+    # Either total processing time of process and child processes as reported
+    # in pieces by times(), or time since Epoch depending on setting of
+    # $times_are_clock.
+    # That variable is to be set on OSs (MSWin32) where times() does not
+    # include time for subprocesses.
+    if ($times_are_clock) {
+        return time();
+    }
+    my ($user, $system, $cuser, $csystem) = times();
+    return $user + $system + $cuser + $csystem;
+}
+
+#************************************************************
+
+sub delta_t {
+    # Return clock time since start of overall parent
+    return sprintf( '%.2f', time() - $clock0 );
+}
+
+#************************************************************
+
 sub add_timing {
     # Usage: add_timing( time_for_run, rule );
     # Adds time_for_run to @timings1, @timings0
-    my ( $time, $rule ) = @_; 
-    push @timings1, "'$rule': time = " . sprintf('%.2f',$time) . "\n";
-    push @timings0, "'$rule': time = " . sprintf('%.2f',$time) . "\n";
+    my ( $time, $rule ) = @_;
+    $time = sprintf('%.2f', $time);
+    push @timings1, "'$rule': time = $time\n";
+    push @timings0, "'$rule': time = $time\n";
 }
 
 ############################
@@ -3270,8 +3602,21 @@ sub init_timing1 {
 sub init_timing_all {
     # Initialize timing for totals and for one run:
     @timings0 = ();
+    $clock0 = time();
     $processing_time0 = processing_time();
     &init_timing1;
+}
+
+############################
+
+sub sum_timings {
+    # Sum timings in an array like @timings0 or @timings1
+    my $total = 0;
+    for (@_) {
+        if (/: time = (.*)\s$/) {
+            $total += $1;
+        }}
+    return $total;
 }
 
 ############################
@@ -3279,17 +3624,19 @@ sub init_timing_all {
 sub show_timing1 {
     # Show timing for one run.
     my $processing_time = processing_time() - $processing_time1;
-    my $invoked_time = 0;
-    for (@timings1) {
-        if (/: time = (.*)\s$/) {
-            $invoked_time += $1;
-    }}
-    print @timings1, "Processing time = ",
-        sprintf('%.2f', $processing_time),
-        ", of which invoked processes = $invoked_time, other = ",
-        sprintf( '%.2f', $processing_time-$invoked_time ), ".\n";
+    my $invoked_time = sum_timings(@timings1);
+    if ($times_are_clock) {
+        print @timings1,
+              "Total clock times for invoked rules = ",
+              sprintf('%.2f', $invoked_time), ".\n";
+    } else {
+        print @timings1,
+            "Processing time = ", sprintf('%.2f', $processing_time),
+            ", of which invoked rules = $invoked_time, other = ",
+            sprintf( '%.2f', $processing_time-$invoked_time ), ".\n";
+    }
     print "Elapsed clock time = ",
-          sprintf( '%.2f', time()-$clock1 ), ".\n";
+        sprintf( '%.2f', time()-$clock1 ), ".\n";
     print "Number of rules run = ", 1+$#timings1, "\n";
 }
 
@@ -3298,9 +3645,18 @@ sub show_timing1 {
 sub show_timing_grand {
     # Show grand total timing.
     my $processing_time = processing_time() - $processing_time0;
-    print # @timings0,
-          "Grand total processing time = ",
-          sprintf('%.2f', $processing_time), "\n";
+    my $invoked_time = sum_timings(@timings0);
+    if ($times_are_clock) {
+        print #@timings0,
+              "Total clock times for invoked rules = ",
+              sprintf('%.2f', $invoked_time), ".\n";
+    } else {
+        print #@timings0,
+              "Grand total processing time = ",
+              sprintf('%.2f', $processing_time), "\n";
+    }
+    print "Elapsed clock time = ",
+          sprintf( '%.2f', time()-$clock0 ), ".\n";
     print "Total number of rules run = ", 1+$#timings0, "\n";
 }
 
@@ -4605,6 +4961,7 @@ CHANGE:
         &rdb_set_rule_net;
         %rules_to_watch = array_to_hash( &rdb_accessible );
 
+        run_hooks( 'compile_end' );
         if ( $failure > 0 ) {
             if ( !$failure_msg ) {
                 $failure_msg = 'Failure to make the files correctly';
@@ -4614,6 +4971,7 @@ CHANGE:
     "    ==> You will need to change a source file before I do another run <==\n";
             if ($failure_cmd) {
                 Run_subst( $failure_cmd );
+                run_hooks( 'compile_failure' );
             }
 
             # In the WAIT loop, we will test for changes in source files
@@ -4650,7 +5008,6 @@ CHANGE:
                 if ($success_cmd) { Run_subst( $success_cmd ); }
                 run_hooks( 'compile_success' );
             }
-            run_hooks( 'compile_end' );
         }
         rdb_show_rule_errors();
         if ($rules_list) { rdb_list(); }
@@ -5056,6 +5413,9 @@ sub print_help
   "   -noemulate-aux-dir - use -aux-directory option with *latex\n",
   "   -noindexfudge or -nomakeindexfudge - don't change directory when running\n",
   "                    makeindex\n",
+# !!!!!!!!!!!!! START PARALLEL CODE
+  "   -noparallel    - disble parallel processing.\n",
+# !!!!!!!!!!!!! END PARALLEL CODE
   "   -norc          - omit automatic reading of system, user and project rc files\n",
   "   -output-directory=dir or -outdir=dir\n",
   "                  - set name of directory for output files\n",
@@ -5065,6 +5425,25 @@ sub print_help
   "                  - if FORMAT is dvi, turn on dvi output, turn off others\n",
   "                  - if FORMAT is pdf, turn on pdf output, turn off others\n",
   "                  - otherwise error\n",    
+# !!!!!!!!!!!!! START PARALLEL CODE
+  "   -parallel   - enable parallel processing using fork().  Two levels of\n",
+  "                 concurrency are exploited:\n",
+  "                 1. Multiple top-level .tex files are compiled simultaneously.\n",
+  "                 2. Within each document, independent pre-primary rules\n",
+  "                    (cusdep conversions, bibtex, makeindex, fig2dev, etc.) are\n",
+  "                    run concurrently before the *latex run.\n",
+  "                 Output from parallel jobs is buffered and printed atomically.\n",
+  "   -parallel=n - same as -parallel but limits concurrency to n simultaneous\n",
+  "                 processes.  n=0 or n=1 => disable parallelism.\n",
+  "                 n < 0 => unlimited concurrently.\n",      
+# END BAD COPILOT PARALLEL CODE
+# !!!!!!!!!!!!!!!!!! PROBLEM: -auxdir can't be set with .tex-name dependence.
+#  "                 To avoid intermediate-file collisions when compiling multiple\n",
+#  "                 .tex files, ensure each file uses a distinct aux/output\n",
+#  "                 directory (e.g. with -auxdir and -outdir, or -cd).\n",
+# END BAD COPILOT PARALLEL CODE   
+  "   -parallel-   - disble parallel processing.\n",
+# !!!!!!!!!!!!! END PARALLEL CODE
   "   -pdf   - generate pdf by pdflatex\n",
   "   -pdfdvi - generate pdf by latex (or dvilualatex) + dvipdf\n",
   "             -- see -dvilua for how to get dvilualatex used\n",    
@@ -5833,7 +6212,9 @@ sub do_copies_out_to_out2 {
         $name =~ s/%R/$$Pbase/;
         my $from =  "$source1$name";
         my $to = "$dest1$name";
-        if ( test_gen_file_time( $from ) ) {
+        if ( test_gen_file_time( $from )
+             || ( -e $from && ! -e $to )
+            ) {
             if (! $silent) { print "$My_name: Copying '$from' to '$to'\n"; }
             # Work around problem that if $from and $to refer to the same
             # file, then copy returns zero, for error, but does **not** set
@@ -6410,7 +6791,13 @@ LINE:
             ) {
             push @warning_list, $_;
             $bad_character++;
-        } 
+        }
+        elsif ( /^warning [^:]*: ignoring duplicate destination with the name '[^']*'/i
+                || /^Package hyperref Warning: Suppressing link with empty target on input line \d+./
+            ) {
+            # Miscellaneous warnings
+            push @warning_list, $_;
+        }
         elsif ( /^Document Class: / ) {
             # Class sign-on line
             next LINE;
@@ -7251,7 +7638,7 @@ sub parse_fls {
                  && (normalize_filename($cwd_fls) ne normalize_filename($cwd) )
                ) {
                 print
-                    "$My_name: ========= Mismatch of qcd name between .fls file and perl's report:\n",
+                    "$My_name: ========= Mismatch of cwd name between .fls file and perl's report:\n",
                     "  '$cwd_fls'\n",
                     "  '$cwd'\n",
                     "This is for your information and is not normally indicative of a bug.\n";
@@ -9380,7 +9767,7 @@ MISSING_FILE:
               if ( -f "$path$base.$fromext" ) {
                   # Source file for the missing file exists
                   # So we have a real include file, and it will be made
-                  # next time by &rdb__dependents
+                  # next time by &rdb_set_dependents
                   $new_includes{"$path$base.$toext"} = 1;
 #                  next MISSING_FILE;
               }
@@ -10046,7 +10433,14 @@ sub rdb_make {
         #      changed and no run was needed, or because the
         #      number of passes through the rule exceeded the
         #      limit.  In the second case $too_many_passes was set.
-        rdb_for_some( [@pre_primary, $current_primary], \&rdb_make1 );
+# !!!!!!!!!!!!! START PARALLEL CODE
+        # Use rdb_make_par_rules to make the pre_primary rules, either
+        # serially or in parallel, depending on setting.
+        rdb_make_par_rules( \@pre_primary, \&rdb_make1 );
+        rdb_one_rule( $current_primary, \&rdb_make1 );
+# !!!!!!!!!!!!!  END PARALLEL CODE
+# !!!  NON-PARALLEL CODE :      
+#        rdb_for_some( [@pre_primary, $current_primary], \&rdb_make1 );
         if ($switched_primary_output) {
             print "=========SWITCH OF OUTPUT WAS DONE.\n";
             next PASS;
@@ -10257,6 +10651,319 @@ sub rdb_make {
     return $failure;
 } #END rdb_make
 
+#************************************************************
+
+# !!!!!!!!!!!!! START PARALLEL CODE
+
+sub rdb_acquire_lock {
+    # Call: rdb_acquire_lock( $dest_file, r|w )
+    # Returns a file handle locked on a per-destination lock file,
+    # or undef if locking is not applicable (Windows, no dest, etc.).
+    # The lock is exclusive if the second argument is 'w' (for 'write').
+    # The lock is shared if the second argument is 'r' (for 'read').
+    # The lock is released automatically when the caller closes or undef-assigns
+    # the returned file handle.
+    # Called only when $parallel_jobs > 1.
+    #
+    # Lock files live in the $tmpdir with names derived from the MD5 digest
+    # of the absolute pathnames of the corresping files.  We use absolute
+    # pathnames, not the typically relative supplied $dest_file. This is
+    # because the -cd option may be used, so that the cwd during processing
+    # of a particular document may vary with the document.  If two
+    # documents share a file specified by a relative name, it will have
+    # different relative names for the two documents.  But the absolute
+    # pathnames should correspond, at least if symlinks don't get used for 
+    # some cases and not others. 
+    # We won't worry about interference with other instances of latexmk,
+    # since the other instances may not be using parallelism.  Then precautions
+    # taken here won't protect against them.  Thus the lock files are only
+    # for use within this instance of latexmk (and the forked copies).
+    # Therefore lock files will be deleted at the end of the run.
+    #
+    my ($dest, $kind) = @_;
+    my $lock_kind = LOCK_EX;
+    my $lock_text = 'excl';
+    if ($kind eq 'w' ) { $lock_kind = LOCK_EX; $lock_text = 'excl'; }
+    elsif ($kind eq 'r' ) { $lock_kind = LOCK_SH; $lock_text = 'shared'; }
+    else { die "$My_name->rdb_acquire_look( $dest, $kind): Wrong value for 2nd argument.\n"; }
+    
+    return undef unless defined $dest && $dest ne '';
+    my $lock_tag = Digest::MD5::md5_hex( abs_path($dest) );
+    # Surround filename by '#' so it's in a better place in alphabetic listings,
+    # and is reminiscent of file used by emacs.
+    my $lock_file = "$tmpdir/#latexmk.lock.$lock_tag#";
+    $lock_files{$lock_file} = 1;
+
+    my $fh;
+    say( "$My_name: Getting $lock_text lock associated with $dest at ", delta_t() )
+        if $diagnostics;
+    if ( !open( $fh, '>>', $lock_file ) ) {
+        warn "$My_name: Cannot open lock file '$lock_file': $!\n"
+            if  $diagnostics;
+        return undef;
+    }
+    if ( !flock( $fh, $lock_kind ) ) {
+        warn "$My_name: Cannot acquire lock on '$lock_file': $!\n"
+            if $diagnostics;
+        close $fh;
+        return undef;
+    }
+    say( "$My_name: Have $lock_text lock associated with $dest at ", delta_t() )
+        if $diagnostics;
+    return $fh;
+} #END rdb_acquire_lock
+
+#************************************************************
+
+sub rdb_make_par_rules {
+    # Call: rdb_make_par_rules( \@rules )
+    # Parallel variant of rdb_for_some(\@rules, \&rdb_make1).
+    # Runs the rules concurrently (up to $parallel_jobs at a time) using
+    # fork().  Each child captures its STDOUT/STDERR to a temp file so that
+    # output is printed atomically by the parent when the child finishes,
+    # preventing interleaving of messages from simultaneous jobs.
+    #
+    # Rule state changes (out_of_date flag, source-file hashes, last_result,
+    # etc.) are communicated back to the parent via a Storable temp file so
+    # that the parent's %rule_db is consistent after all children complete.
+    #
+    # Falls back to the sequential rdb_for_some when parallelism is not
+    # applicable: sequential mode ($parallel_jobs <= 1), Windows (no fork),
+    # or a single rule in the list.
+    #
+    # Must be called from within rdb_make's dynamic scope so the package
+    # variables $runs, $runs_total, %pass, $too_many_passes, $newrule_nofile,
+    # and $failure are visible with their rdb_make-local values.
+
+    our ($runs, $runs_total, %pass, $too_many_passes, $newrule_nofile, $failure);
+
+    my $rules_ref = shift;
+    my @rules = grep { $_ && rdb_rule_exists($_) } @$rules_ref;
+    return unless @rules;
+
+    my $par_limit = ($parallel_jobs < 0) ? scalar(@rules) : $parallel_jobs;
+
+    # Sequential fallback when parallelism is not useful.
+    # JCC ?? 25 Mar 2026. Removed $Windows_like condition.  I've dealt with
+    #      Windows issues at initialization. 
+    if ( $par_limit <= 1 || scalar(@rules) <= 1 ) {
+        rdb_for_some( $rules_ref, \&rdb_make1 );
+        return;
+    }
+
+    my %par_jobs;   # pid => { rule, out_file, state_file }
+    my $par_running = 0;
+
+    # Helper: apply one completed child's state back to the parent.
+    my $collect = sub {
+        my $done_pid = shift;
+        my $job = $par_jobs{$done_pid};
+        return unless defined $job;
+        delete $par_jobs{$done_pid};
+
+        my $r          = $job->{rule};
+        my $out_file   = $job->{out_file};
+        my $state_file = $job->{state_file};
+
+        # Print child output atomically to prevent interleaving.
+        if ( defined $out_file && -e $out_file ) {
+            if ( open my $fh, '<', $out_file ) {
+                local $/;
+                my $c = <$fh>;
+                close $fh;
+                if (defined $c && $c ne '') {
+                    print "=====START OF OUTPUT FROM PID $done_pid\n";
+                    print $c;
+                    print "=====END OF OUTPUT FROM PID $done_pid\n";
+                }
+            }
+            unlink $out_file;
+        }
+
+        # Restore rule state from Storable snapshot written by child.
+        if ( defined $state_file && -e $state_file ) {
+            my $state = eval { retrieve($state_file) };
+            if ($@) {
+                warn "$My_name: Failed to retrieve state for rule '$r' from '$state_file': $@\n";
+            }
+            unlink $state_file;
+            if ( defined $state && ref $state eq 'HASH' ) {
+                $failure         ||= $state->{failure};
+                $too_many_passes ||= $state->{too_many_passes};
+                $newrule_nofile  ||= $state->{newrule_nofile};
+                if ( $state->{ran} ) {
+                    $runs++;
+                    $runs_total++;
+                }
+                if ($state->{timings1}) {
+                    push @timings1, @{$state->{timings1}};
+                }
+                if ($state->{timings0}) {
+                    push @timings0, @{$state->{timings0}};
+                }
+                if ($state->{lock_files}) {
+                    for (keys %{$state->{lock_files}}) { $lock_files{$_} = 1;}
+                }
+                $pass{$r} = $state->{pass} if defined $state->{pass};
+
+                # Apply rule data changes to parent's %rule_db entry.
+                rdb_one_rule( $r, sub {
+                    $$Pno_history      = $state->{no_history}
+                        if defined $state->{no_history};
+                    $$Pout_of_date      = $state->{out_of_date}
+                        if defined $state->{out_of_date};
+                    $$Pout_of_date_user = $state->{out_of_date_user}
+                        if defined $state->{out_of_date_user};
+                    $$Prun_time         = $state->{run_time}
+                        if defined $state->{run_time};
+                    $$Pchanged          = $state->{changed}
+                        if defined $state->{changed};
+                    $$Plast_result      = $state->{last_result}
+                        if defined $state->{last_result};
+                    $$Plast_result_info = $state->{last_result_info}
+                        if defined $state->{last_result_info};
+                    $$Plast_message     = $state->{last_message}
+                        if defined $state->{last_message};
+                    # Sync source-file state (mtime/size/md5 snapshots).
+                    if ( ref $state->{PHsource} eq 'HASH' ) {
+                        foreach my $f ( keys %{ $state->{PHsource} } ) {
+                            $$PHsource{$f} = $state->{PHsource}{$f};
+                        }
+                    }
+                } );
+            }
+        }
+    };  # end $collect
+
+    for my $r (@rules) {
+        while ($par_running >= $par_limit) {
+            # Special return values:
+            #    wait and waitpid: -1 for no more children.
+            #    waitpid: 0 if there are unfinished running children.
+            my @finished = ();
+            # Wait for a child to terminate
+            my $done_pid = wait();
+            last if $done_pid == -1;
+            push @finished, $done_pid;
+            # Harvest all other finished children to avoid too many zombies
+            while (1) {
+                my $done_pid1 = ( waitpid(-1, &WNOHANG) );
+                last if ( ($done_pid1 == -1) || ($done_pid1 == 0) );
+                push @finished, $done_pid1;
+            }
+            for (sort @finished) {
+                $collect->($_);
+                $par_running--;
+            } 
+        }
+
+        # Create temp files: one for the child's stdio, one for its state.
+        my ($out_fh,   $out_file)   = tempfile( UNLINK => 0, SUFFIX => '.latexmk-out' );
+        my ($state_fh, $state_file) = tempfile( UNLINK => 0, SUFFIX => '.latexmk-st'  );
+        close $out_fh;
+        close $state_fh;
+
+        my $pid = fork();
+        if ( !defined $pid ) {
+            # Fork failed – run serially as a fallback.
+            unlink $out_file, $state_file;
+            warn "$My_name: Cannot fork for rule '$r': $!\n";
+            rdb_for_some( [$r], \&rdb_make1 );
+            next;
+        }
+
+        if ( $pid == 0 ) {
+            # ---- Child process ----
+            say "==========\nI am child, PID $$, for rule '$r'"
+                if $parallel_diagnostics;
+            $child = 2;
+            # Redirect STDIN to /dev/null, to avoid requests for user input
+            #   causing problems.
+            # Redirect STDOUT/STDERR to temp file, so that output
+            #   from this child process is buffered; it will be
+            #   printed atomically by the parent when we complete,
+            #   without being mixed with output from other children.
+            open( STDIN, '<', '/dev/null' )
+                or die "$My_name: Cannot redirect STDIN: $!\n"; 
+            open( STDOUT, '>', $out_file )
+                or die "$My_name: Cannot redirect STDOUT for '$r': $!\n";
+            open( STDERR, '>&', \*STDOUT )
+                or die "$My_name: Cannot redirect STDERR for '$r': $!\n";
+            STDOUT->autoflush(1);
+
+            # Clear inherited job table so this child doesn't accidentally
+            # wait() for its sibling rule processes.
+            %par_jobs = ();
+            # Clear parent's accumulated timings, so I only deal with my own:
+            @timings0 = @timings1 = ();
+            # Clear list of lock files, so child only returns its own lock files:
+            %lock_files = ();
+
+            my $ran_before = $runs;
+            rdb_one_rule( $r, \&rdb_make1 );
+
+            # Snapshot the rule's updated state for the parent.
+            my %state = (
+                failure         => $failure,
+                too_many_passes => $too_many_passes,
+                newrule_nofile  => $newrule_nofile,
+                ran             => ( $runs > $ran_before ) ? 1 : 0,
+                pass            => ( $pass{$r} // 0 ),
+            );
+            rdb_one_rule( $r, sub {
+                $state{no_history}       = $$Pno_history;
+                $state{out_of_date}      = $$Pout_of_date;
+                $state{out_of_date_user} = $$Pout_of_date_user;
+                $state{run_time}         = $$Prun_time;
+                $state{changed}          = $$Pchanged;
+                $state{last_result}      = $$Plast_result;
+                $state{last_result_info} = $$Plast_result_info;
+                $state{last_message}     = $$Plast_message;
+                # Deep-copy source-file hashes (mtime/size/md5/dummy arrays).
+                my %src;
+                foreach my $f ( keys %$PHsource ) {
+                    $src{$f} = [ @{ $$PHsource{$f} } ];
+                }
+                $state{PHsource} = \%src;
+                $state{timings0} = \@timings0;
+                $state{timings1} = \@timings1;
+                $state{lock_files} = \%lock_files;
+            } );
+            eval { nstore( \%state, $state_file ) };
+            if ($@) {
+                # Write a warning to the captured-output file so the parent can
+                # display it; we cannot use STDERR here (it goes to $out_file).
+                warn "$My_name: Failed to store state for rule '$r': $@\n";
+                exit 1;  # Signal parent that state was not saved.
+            }
+            exit 0;
+        }
+
+        # ---- Parent process ----
+        $par_jobs{$pid} = {
+            rule       => $r,
+            out_file   => $out_file,
+            state_file => $state_file,
+        };
+        $par_running++;
+    }   # end for my $r
+
+    # Drain remaining children.
+    while ($par_running > 0) {
+        my $done_pid = wait();
+        last if $done_pid == -1;
+        next unless exists $par_jobs{$done_pid};
+        $collect->($done_pid);
+        $par_running--;
+    }
+    if (%par_jobs) {
+        warn "My_name: Children whose saved data I've not used.  I'll deal with this.\n";
+        for (keys %par_jobs) { $collect->($_); }
+    }
+} #END rdb_make_par_rules
+
+# !!!!!!!!!!!!! END PARALLEL CODE
+
 #-------------------
 
 sub rdb_show_rule_errors {
@@ -10368,6 +11075,59 @@ sub rdb_make1 {
         return;
     }
 
+# !!!!!!!!!!!!! START PARALLEL CODE
+    # Cross-process deduplication: when running in parallel mode, two
+    # latexmk processes may both decide that they need to produce the
+    # same destination file (e.g., shared/foo.eps → shared/foo.pdf when
+    # two documents include the same graphic).  Use an exclusive file lock
+    # on a per-destination lock file to serialise them.  The process that
+    # gets the lock second re-checks the file system; if the first process
+    # already built the destination, the second one skips the run.
+    my $par_lock_fh;  # held open = lock held; undef or closed = released
+    #??
+    #  Are the tests for $$Pdest and $$Psource needed?
+    if (    $parallel_jobs != 0 && $parallel_jobs != 1
+         && $$Pcmd_type ne 'primary'
+         && $$Pdest && $$Psource )
+    {
+        # Will check for change in dest file while waiting for lock:
+        # another process may have been making the file and hence locking
+        # the file.  I will just use time-size criterion, and not bother
+        # with hash calc.  Time should change unless making is fast and
+        # file system has poor time granularity.
+        my ($old_dest_t, $old_dest_s) = get_time_size( $$Pdest );
+
+        $par_lock_fh = rdb_acquire_lock( $$Pdest, 'w' );
+        if ( $par_lock_fh ) {
+            # Re-check status of dest file: another process may have
+            # built the destination while we were waiting for the lock.
+            my ($new_dest_t, $new_dest_s) = get_time_size( $$Pdest );
+            if ( ($new_dest_t ==  $old_dest_t) && ($new_dest_s ==  $old_dest_s) ) {
+                print "$My_name: In rule '$rule', dest '$$Pdest'\n",
+                      "  wasn't changed during getting of lock.\n";
+            }
+            else {
+                print "$My_name: In rule '$rule', dest '$$Pdest'\n",
+                    "  CHANGED during getting of lock, i.e., was made by another process.\n",
+                    " Previous and current (time,size): ($old_dest_t, $old_dest_s), ($new_dest_t, $new_dest_s).\n",
+                    "  So it is now up-to-date.\n";
+                print "   !!! I need to update state of rule\n";
+                print "  Source file state:\n";
+                rdb_do_files (
+                    sub{
+                        print "   File '$file': $$Ptime, $$Psize\n";
+                    }
+                );
+                $$Pout_of_date = 0;
+                # Set the current state of the files, as if I had run the rule.
+                rdb_update_files();
+                close $par_lock_fh;
+                return;   # nothing to run; $runs left unchanged
+            }
+        }
+    }
+# !!!!!!!!!!!!! END PARALLEL CODE
+
     $runs++;
     $runs_total++;
 
@@ -10375,6 +11135,11 @@ sub rdb_make1 {
 
     warn_running( "Run number $pass{$rule} of rule '$rule'" );
     $return = &rdb_run1;
+
+# !!!!!!!!!!!!! START PARALLEL CODE
+    # Release the cross-process lock after the run completes.
+    if ( $par_lock_fh ) { close $par_lock_fh; }
+# !!!!!!!!!!!!! END PARALLEL CODE
 
     if ($$Pchanged) {
         $newrule_nofile = 1;
@@ -10545,7 +11310,7 @@ sub rdb_run1 {
         $$Plast_result = 2;
         if ($$Plast_message eq '') {
             $$Plast_message = "Command for '$rule' gave return code $return";
-            if ($rule =~ /^(pdf|lua|xe|)latex/) {
+            if ($latex_like) {
                 if ( test_gen_file($log_name) ) {
                     $$Plast_message .=
                       "\n      Refer to '$log_name' and/or above output for details";
@@ -12114,22 +12879,6 @@ sub get_time_size {
 
 #************************************************************
 
-sub processing_time {
-    # Return time used.
-    # Either total processing time of process and child processes as reported
-    # in pieces by times(), or time since Epoch depending on setting of
-    # $times_are_clock.
-    # That variable is to be set on OSs (MSWin32) where times() does not
-    # include time for subprocesses.
-    if ($times_are_clock) {
-        return time();
-    }
-    my ($user, $system, $cuser, $csystem) = times();
-    return $user + $system + $cuser + $csystem;
-}
-
-#************************************************************
-
 sub get_checksum_md5 {
     my $source = shift;
     my $input;
@@ -12924,7 +13673,11 @@ sub Run_Detached {
 #       return (0, 0),
 #   else if I fail to spawn a process
 #       return (0, 1)
+# On Windows, I could use system( 1, ... ) instead of cmd.exe's start command.
+# I think the following is suitable:
+#         return( system(1,$cmd_line), 0 );
 
+    
     my $cmd_line = $_[0];
 
 ##    print "Running '$cmd_line' detached...\n";
@@ -13048,12 +13801,13 @@ sub cache_good_cwd {
             $cwd = $Win_cwd;
         }
         else {
+            $Win_cwd = ($cwd =~ s[^/cygdrive/(.)/][$1:/]r);
             warn "$My_name: Could not correctly run command\n",
                  "      '$cmd'\n",
                  "  to get MSWin version of cygwin path\n",
                  "     '$cwd'\n",
-                 "  The result was\n",
-                 "     '$Win_cwd'\n";
+                 "  I'll fix it up to '$Win_cwd'.\n";
+            $cwd = $Win_cwd;
         }
     }
     elsif ( $^O eq "msys" ) {
